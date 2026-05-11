@@ -1,4 +1,17 @@
 week,game_id,home_team,away_team,home_moneyline,away_moneyline
-1,FAKE-2026-W01-001,Metro Mammoths,Coastal Comets,-150,130
-1,FAKE-2026-W01-002,River Rockets,Valley Voyagers,-110,-110
-2,FAKE-2026-W02-001,Harbor Hawks,Desert Drifters,105,-125
+1,FAKE-2026-W01-001,Atlas,Beacon,-300,240
+1,FAKE-2026-W01-002,Cipher,Delta,-240,200
+1,FAKE-2026-W01-003,Ember,Forge,-140,120
+1,FAKE-2026-W01-004,Granite,Harbor,-105,-115
+2,FAKE-2026-W02-001,Atlas,Delta,-350,275
+2,FAKE-2026-W02-002,Cipher,Harbor,-110,-110
+2,FAKE-2026-W02-003,Ember,Beacon,-250,205
+2,FAKE-2026-W02-004,Granite,Forge,130,-150
+3,FAKE-2026-W03-001,Atlas,Forge,-500,375
+3,FAKE-2026-W03-002,Cipher,Beacon,-300,240
+3,FAKE-2026-W03-003,Harbor,Delta,-220,180
+3,FAKE-2026-W03-004,Granite,Ember,-120,100
+4,FAKE-2026-W04-001,Atlas,Harbor,-180,155
+4,FAKE-2026-W04-002,Cipher,Forge,-160,140
+4,FAKE-2026-W04-003,Ember,Delta,-400,310
+4,FAKE-2026-W04-004,Granite,Beacon,-130,110
