@@ -1,0 +1,42 @@
+# Python
+__pycache__/
+*.py[cod]
+*.pyo
+*.egg-info/
+.pytest_cache/
+pytest-cache-files-*/
+.coverage
+htmlcov/
+build/
+dist/
+
+# Virtual environments
+.venv/
+venv/
+
+# Codex/local verification scratch
+.codex-test-deps/
+.codex-wheels/
+.codex-pip-tmp/
+
+# Local environment and secrets
+.env
+.env.*
+
+# Local data and generated outputs
+data/raw/*
+!data/raw/.gitkeep
+data/processed/*
+!data/processed/.gitkeep
+outputs/reports/*
+!outputs/reports/.gitkeep
+outputs/simulations/*
+!outputs/simulations/.gitkeep
+outputs/charts/*
+!outputs/charts/.gitkeep
+
+# OS/editor noise
+.DS_Store
+Thumbs.db
+.vscode/
+.idea/
