@@ -6,8 +6,9 @@ Phase 1 ranks weekly survivor picks from local CSV inputs using no-vig win
 probability, public ownership, leverage, week scarcity, and full-season future
 opportunity cost. Phase 2 adds a Monte Carlo engine that simulates game
 outcomes, public-field eliminations, personal-entry survival, contest equity,
-and upset leverage. It does not scrape websites, ingest live feeds, optimize a
-40-entry portfolio, or build a dashboard yet.
+and upset leverage. Phase 3 adds a multi-entry portfolio optimizer for roughly
+40 personal entries. It does not scrape websites, ingest live feeds, or build a
+dashboard.
 
 No real odds, real pool data, secrets, API keys, or scraping code are included.
 
@@ -114,8 +115,8 @@ Core assumptions:
 - Public entries are tracked as an aggregate field size, while personal entries
   are tracked separately with entry-level alive status, used teams, and paths.
 - Personal entries use the existing weekly ranking output as a simple
-  best-available strategy. Portfolio optimization and diversification are left
-  for future phases.
+  best-available strategy inside simulations. The Phase 3 optimizer separately
+  creates diversified one-week allocations before future simulation integration.
 - Contest equity is approximated as:
 
 ```text
@@ -144,6 +145,44 @@ Interpretation guidance:
 - `uniqueness_value` is a simple first-pass proxy for strong picks that are not
   crowded by public ownership.
 
+## Run Portfolio Optimization
+
+The portfolio CLI uses the weekly ranking engine, expands the sample entries to
+the requested active portfolio size, and allocates picks across entries:
+
+```powershell
+python scripts/run_portfolio_optimizer.py --week 1 --entries 40 --aggression balanced
+```
+
+It prints an exposure summary and writes:
+
+```text
+outputs/reports/week_1_portfolio_report.md
+```
+
+Aggression modes:
+
+- `conservative`: emphasizes no-vig win probability and keeps contrarian
+  exposure smaller.
+- `balanced`: blends final score, survival probability, leverage, ownership,
+  and future flexibility.
+- `aggressive`: gives more weight to leverage and uniqueness and can allocate
+  small exposure to teams below 50% win probability.
+
+Exposure summary interpretation:
+
+- `entries_allocated` is the number of personal entries assigned to a team.
+- `exposure_pct` is that team's share of active personal entries. The default
+  cap is 40%.
+- `public_pick_pct` shows how crowded the team is in the public field.
+- `portfolio_score` is the optimizer's equity-oriented blend of weekly ranking
+  score, win probability, leverage, ownership uniqueness, and future
+  flexibility.
+- The report includes both independent and correlated estimates for the chance
+  at least one personal entry survives the week. The correlated estimate groups
+  duplicate team picks into one shared game outcome and is the better lens for
+  same-team risk.
+
 ## Project Layout
 
 ```text
@@ -165,8 +204,8 @@ tests/          Pytest suite
 Phase 2 Monte Carlo simulation: simulate pool outcomes across full seasons and
 estimate contest equity distributions. Initial engine is implemented.
 
-Phase 3 portfolio optimizer for 40 entries: allocate picks across controlled
-entries with diversification and correlated-risk constraints.
+Phase 3 portfolio optimizer for 40 entries: implemented as a deterministic,
+heuristic allocation layer with diversification and correlated-risk metrics.
 
 Phase 4 ownership forecasting: project public pick percentages before they are
 known or when multiple public sources disagree.
