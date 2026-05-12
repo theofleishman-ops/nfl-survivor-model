@@ -18,6 +18,8 @@ venv/
 .codex-test-deps/
 .codex-wheels/
 .codex-pip-tmp/
+.pytest-tmp-local/
+outputs/pytest-tmp/
 
 # Local environment and secrets
 .env
