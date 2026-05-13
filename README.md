@@ -7,8 +7,9 @@ probability, public ownership, leverage, week scarcity, and full-season future
 opportunity cost. Phase 2 adds a Monte Carlo engine that simulates game
 outcomes, public-field eliminations, personal-entry survival, contest equity,
 and upset leverage. Phase 3 adds a multi-entry portfolio optimizer for roughly
-40 personal entries. It does not scrape websites, ingest live feeds, or build a
-dashboard.
+40 personal entries. Phase 4 adds real-data CSV templates, validation, import
+helpers, and season-aware loaders. It does not scrape websites, ingest live
+feeds, or build a dashboard.
 
 No real odds, real pool data, secrets, API keys, or scraping code are included.
 
@@ -26,12 +27,62 @@ pip install -r requirements.txt
 pytest
 ```
 
+## Real Data Workflow
+
+This project still has no scraping, APIs, secrets, or live feeds. Paste or
+export CSVs from trusted sources into the local files below, then validate them
+before running the model. Public pick percentages should be decimals, e.g.
+`0.38` for 38%. Moneylines should be American odds, e.g. `-350` or `+220`.
+
+Create a season workspace from the small templates:
+
+```powershell
+python scripts/create_real_data_workspace.py --season 2026
+```
+
+Fill these CSVs:
+
+```text
+data/raw/2026/schedule.csv
+data/raw/2026/odds.csv
+data/raw/2026/public_picks.csv
+data/raw/2026/entries.csv
+```
+
+Optional files are also created for later use:
+
+```text
+data/raw/2026/pool_history.csv
+data/raw/2026/double_pick_weeks.csv
+```
+
+Validate the season files:
+
+```powershell
+python scripts/validate_data_files.py --data-dir data/raw/2026
+```
+
+Run the model against the real-data workspace:
+
+```powershell
+python scripts/run_weekly_rankings.py --week 1 --season 2026 --data-dir data/raw
+python scripts/run_simulations.py --week 1 --season 2026 --data-dir data/raw --simulations 10000
+python scripts/run_portfolio_optimizer.py --week 1 --season 2026 --data-dir data/raw --entries 40
+```
+
+The template files live in:
+
+```text
+data/raw/templates/
+```
+
 ## Run Weekly Rankings
 
 The CLI uses `data/sample/` by default:
 
 ```powershell
 python scripts/run_weekly_rankings.py --week 1
+python scripts/run_weekly_rankings.py --week 1 --use-sample
 ```
 
 It prints the top recommendations and writes:
@@ -207,10 +258,11 @@ estimate contest equity distributions. Initial engine is implemented.
 Phase 3 portfolio optimizer for 40 entries: implemented as a deterministic,
 heuristic allocation layer with diversification and correlated-risk metrics.
 
-Phase 4 ownership forecasting: project public pick percentages before they are
-known or when multiple public sources disagree.
+Phase 4 real-data templates and validation: implemented for manual schedule,
+odds, public-pick, entry, pool-history, and double-pick-week CSVs.
 
-Phase 5 odds/public-pick ingestion: add validated ingestion adapters for real
+Phase 5 ownership forecasting and ingestion adapters: project public pick
+percentages before they are known and add validated ingestion adapters for real
 odds and public-pick exports, without secrets in the repo.
 
 Phase 6 dashboard: build an interactive UI for rankings, reports, scenarios,
