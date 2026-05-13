@@ -16,6 +16,6 @@ def test_generate_weekly_candidates_marks_entry_used_teams():
 
     used_by_entry = candidates.set_index("team")["team_already_used"]
 
-    assert used_by_entry.loc["Atlas"]
-    assert used_by_entry.loc["Ember"]
-    assert not used_by_entry.loc["Cipher"]
+    assert used_by_entry.loc["KC"]
+    assert used_by_entry.loc["BUF"]
+    assert not used_by_entry.loc["PHI"]

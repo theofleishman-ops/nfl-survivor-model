@@ -8,6 +8,9 @@ from typing import Any
 
 import pandas as pd
 
+from survivor.game_ids import MAX_SEASON, MIN_SEASON, build_game_id, parse_game_id
+from survivor.teams import normalize_team_name
+
 
 @dataclass(frozen=True)
 class CsvSchema:
@@ -31,13 +34,14 @@ BOOL_FALSE_VALUES = {"false", "f", "0", "no", "n", "inactive", "dead"}
 
 SCHEDULE_SCHEMA = CsvSchema(
     required_columns=("week", "game_id", "home_team", "away_team"),
-    optional_columns=("kickoff",),
+    optional_columns=("kickoff", "season"),
     column_types={
         "week": "positive integer",
         "game_id": "string",
         "home_team": "string",
         "away_team": "string",
         "kickoff": "optional string or timestamp",
+        "season": "optional NFL season year",
     },
 )
 
@@ -140,7 +144,11 @@ def validate_schedule_df(df: pd.DataFrame) -> list[str]:
     _validate_required_columns(df, SCHEDULE_SCHEMA.required_columns, "schedule", errors)
     _validate_required_values(df, SCHEDULE_SCHEMA.required_columns, "schedule", errors)
     _validate_positive_integer_column(df, "week", "schedule", errors)
-    _validate_different_columns(df, "home_team", "away_team", "schedule", errors)
+    _validate_season_column_if_present(df, "schedule", errors)
+    _validate_team_alias_columns(df, ["home_team", "away_team"], "schedule", errors)
+    _validate_game_id_rows(df, "schedule", errors)
+    _validate_different_teams(df, "home_team", "away_team", "schedule", errors)
+    _validate_duplicates(df, ["game_id"], "schedule", errors)
     _validate_duplicates(df, ["week", "game_id"], "schedule", errors)
     _validate_team_week_uniqueness(
         df,
@@ -159,8 +167,11 @@ def validate_odds_df(df: pd.DataFrame) -> list[str]:
     _validate_positive_integer_column(df, "week", "odds", errors)
     _validate_moneyline_column(df, "home_moneyline", "odds", errors)
     _validate_moneyline_column(df, "away_moneyline", "odds", errors)
-    _validate_different_columns(df, "home_team", "away_team", "odds", errors)
+    _validate_team_alias_columns(df, ["home_team", "away_team"], "odds", errors)
+    _validate_game_id_rows(df, "odds", errors)
+    _validate_different_teams(df, "home_team", "away_team", "odds", errors)
     _validate_probability_columns_if_present(df, "odds", errors)
+    _validate_duplicates(df, ["game_id"], "odds", errors)
     _validate_duplicates(df, ["week", "game_id"], "odds", errors)
     _validate_team_week_uniqueness(
         df,
@@ -195,6 +206,7 @@ def validate_public_picks_df(df: pd.DataFrame) -> list[str]:
     if pick_column is not None:
         _validate_required_values(df, (pick_column,), "public_picks", errors)
     _validate_positive_integer_column(df, "week", "public_picks", errors)
+    _validate_team_alias_columns(df, ["team"], "public_picks", errors)
     _validate_duplicates(df, ["week", "team"], "public_picks", errors)
     return errors
 
@@ -241,6 +253,7 @@ def validate_pool_history_df(df: pd.DataFrame) -> list[str]:
         "pool_history",
         errors,
     )
+    _validate_team_alias_columns(df, ["most_popular_pick"], "pool_history", errors)
     _validate_probability_column(
         df,
         "most_popular_pick_share",
@@ -312,6 +325,7 @@ def _validate_entry_state_df(df: pd.DataFrame) -> list[str]:
     _validate_required_columns(df, ENTRIES_SCHEMA.required_columns, "entries", errors)
     _validate_required_values(df, ("entry_id", "active"), "entries", errors)
     _validate_boolish_column(df, "active", "entries", errors)
+    _validate_semicolon_team_list_column(df, "used_teams", "entries", errors)
     _validate_duplicates(df, ["entry_id"], "entries", errors)
     return errors
 
@@ -322,6 +336,7 @@ def _validate_entry_history_df(df: pd.DataFrame) -> list[str]:
     _validate_required_columns(df, required, "entries", errors)
     _validate_required_values(df, required, "entries", errors)
     _validate_positive_integer_column(df, "week", "entries", errors)
+    _validate_team_alias_columns(df, ["team_picked"], "entries", errors)
     _validate_boolish_column(df, "is_alive", "entries", errors)
     _validate_duplicates(df, ["entry_id", "week"], "entries", errors)
     return errors
@@ -353,6 +368,184 @@ def _validate_required_values(
                 f"{label} column '{column}' has blank required values on rows "
                 f"{_format_rows(missing_mask)}."
             )
+
+
+def _validate_season_column_if_present(
+    df: pd.DataFrame,
+    label: str,
+    errors: list[str],
+) -> None:
+    if "season" not in df.columns:
+        return
+
+    _validate_required_values(df, ("season",), label, errors)
+    values = pd.to_numeric(df["season"], errors="coerce")
+    present = ~df["season"].map(_is_blank)
+    invalid_numeric = present & values.isna()
+    if bool(invalid_numeric.any()):
+        errors.append(
+            f"{label} column 'season' must be numeric on rows "
+            f"{_format_rows(invalid_numeric)}."
+        )
+        return
+
+    invalid_integer = present & values.notna() & ((values % 1) != 0)
+    if bool(invalid_integer.any()):
+        errors.append(
+            f"{label} column 'season' must contain whole numbers on rows "
+            f"{_format_rows(invalid_integer)}."
+        )
+
+    invalid_range = present & values.notna() & ~values.between(MIN_SEASON, MAX_SEASON)
+    if bool(invalid_range.any()):
+        errors.append(
+            f"{label} column 'season' must be between {MIN_SEASON} and "
+            f"{MAX_SEASON} on rows {_format_rows(invalid_range)}."
+        )
+
+
+def _validate_team_alias_columns(
+    df: pd.DataFrame,
+    columns: list[str],
+    label: str,
+    errors: list[str],
+) -> None:
+    for column in columns:
+        if column not in df.columns:
+            continue
+
+        present = ~df[column].map(_is_blank)
+        invalid_rows = []
+        for index, value in df.loc[present, column].items():
+            try:
+                normalize_team_name(value)
+            except ValueError:
+                invalid_rows.append(int(index) + 2)
+
+        if invalid_rows:
+            errors.append(
+                f"{label} column '{column}' has invalid team aliases on rows "
+                f"{_format_row_numbers(invalid_rows)}."
+            )
+
+
+def _validate_semicolon_team_list_column(
+    df: pd.DataFrame,
+    column: str,
+    label: str,
+    errors: list[str],
+) -> None:
+    if column not in df.columns:
+        return
+
+    invalid_rows = []
+    for index, value in df[column].items():
+        if _is_blank(value):
+            continue
+        teams = [team.strip() for team in str(value).split(";") if team.strip()]
+        try:
+            for team in teams:
+                normalize_team_name(team)
+        except ValueError:
+            invalid_rows.append(int(index) + 2)
+
+    if invalid_rows:
+        errors.append(
+            f"{label} column '{column}' has invalid team aliases on rows "
+            f"{_format_row_numbers(invalid_rows)}."
+        )
+
+
+def _validate_game_id_rows(
+    df: pd.DataFrame,
+    label: str,
+    errors: list[str],
+) -> None:
+    if "game_id" not in df.columns:
+        return
+
+    malformed_rows: list[int] = []
+    mismatch_rows: list[int] = []
+    season_mismatch_rows: list[int] = []
+
+    for index, row in df.iterrows():
+        if _is_blank(row.get("game_id")):
+            continue
+
+        row_number = int(index) + 2
+        try:
+            parsed = parse_game_id(row["game_id"])
+        except ValueError:
+            malformed_rows.append(row_number)
+            continue
+
+        if {"week", "home_team", "away_team"}.issubset(df.columns):
+            try:
+                expected = build_game_id(
+                    season=int(parsed["season"]),
+                    week=int(pd.to_numeric(row["week"], errors="raise")),
+                    away_team=normalize_team_name(row["away_team"]),
+                    home_team=normalize_team_name(row["home_team"]),
+                )
+            except (TypeError, ValueError):
+                continue
+
+            if str(row["game_id"]).strip() != expected:
+                mismatch_rows.append(row_number)
+
+        if "season" in df.columns and not _is_blank(row.get("season")):
+            try:
+                season = int(pd.to_numeric(row["season"], errors="raise"))
+            except (TypeError, ValueError):
+                continue
+            if season != int(parsed["season"]):
+                season_mismatch_rows.append(row_number)
+
+    if malformed_rows:
+        errors.append(
+            f"{label} column 'game_id' has malformed canonical game IDs on rows "
+            f"{_format_row_numbers(malformed_rows)}. Expected format "
+            "2026_W01_BAL_AT_KC."
+        )
+    if mismatch_rows:
+        errors.append(
+            f"{label} column 'game_id' must match week, away_team, and home_team "
+            f"on rows {_format_row_numbers(mismatch_rows)}."
+        )
+    if season_mismatch_rows:
+        errors.append(
+            f"{label} column 'game_id' season conflicts with column 'season' on rows "
+            f"{_format_row_numbers(season_mismatch_rows)}."
+        )
+
+
+def _validate_different_teams(
+    df: pd.DataFrame,
+    left_column: str,
+    right_column: str,
+    label: str,
+    errors: list[str],
+) -> None:
+    if left_column not in df.columns or right_column not in df.columns:
+        return
+
+    invalid_rows: list[int] = []
+    for index, row in df.iterrows():
+        if _is_blank(row[left_column]) or _is_blank(row[right_column]):
+            continue
+        try:
+            left = normalize_team_name(row[left_column])
+            right = normalize_team_name(row[right_column])
+        except ValueError:
+            continue
+        if left == right:
+            invalid_rows.append(int(index) + 2)
+
+    if invalid_rows:
+        errors.append(
+            f"{label} columns '{left_column}' and '{right_column}' must be "
+            f"different teams on rows {_format_row_numbers(invalid_rows)}."
+        )
 
 
 def _validate_positive_integer_column(
@@ -563,6 +756,7 @@ def _validate_team_week_uniqueness(
     teams = pd.concat(team_frames, ignore_index=True)
     teams["team"] = teams["team"].astype("string").str.strip()
     teams = teams[teams["team"].notna() & (teams["team"] != "")]
+    teams["team"] = teams["team"].map(_normalize_team_or_original)
     teams["week_text"] = teams["week"].astype("string").str.strip()
     duplicate_mask = teams.duplicated(subset=["week_text", "team"], keep=False)
     if not bool(duplicate_mask.any()):
@@ -599,6 +793,13 @@ def _public_pick_column(df: pd.DataFrame) -> str | None:
         if column in df.columns:
             return column
     return None
+
+
+def _normalize_team_or_original(value: object) -> str:
+    try:
+        return normalize_team_name(value)
+    except ValueError:
+        return str(value).strip()
 
 
 def _is_blank(value: Any) -> bool:

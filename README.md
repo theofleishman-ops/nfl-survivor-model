@@ -8,8 +8,10 @@ opportunity cost. Phase 2 adds a Monte Carlo engine that simulates game
 outcomes, public-field eliminations, personal-entry survival, contest equity,
 and upset leverage. Phase 3 adds a multi-entry portfolio optimizer for roughly
 40 personal entries. Phase 4 adds real-data CSV templates, validation, import
-helpers, and season-aware loaders. It does not scrape websites, ingest live
-feeds, or build a dashboard.
+helpers, and season-aware loaders. Phase 5 adds canonical NFL team and game
+identity helpers so future schedule, odds, and public-pick files can join on
+stable IDs. It does not scrape websites, ingest live feeds, or build a
+dashboard.
 
 No real odds, real pool data, secrets, API keys, or scraping code are included.
 
@@ -62,6 +64,12 @@ Validate the season files:
 python scripts/validate_data_files.py --data-dir data/raw/2026
 ```
 
+Normalize an exported schedule before using it:
+
+```powershell
+python scripts/normalize_schedule_file.py --input raw_schedule.csv --output normalized_schedule.csv --season 2026
+```
+
 Run the model against the real-data workspace:
 
 ```powershell
@@ -75,6 +83,57 @@ The template files live in:
 ```text
 data/raw/templates/
 ```
+
+## Canonical Team And Game IDs
+
+Canonical team abbreviations use this stable 32-team set:
+
+```text
+ARI ATL BAL BUF CAR CHI CIN CLE DAL DEN DET GB HOU IND JAX KC LV LAC LAR MIA MIN NE NO NYG NYJ PHI PIT SEA SF TB TEN WAS
+```
+
+Aliases normalize through `survivor.teams`:
+
+```python
+from survivor.teams import normalize_team_name, is_valid_team
+
+normalize_team_name("Kansas City Chiefs")  # "KC"
+normalize_team_name("K.C.")                # "KC"
+is_valid_team("Chiefs")                    # True
+```
+
+Game IDs use:
+
+```text
+{season}_W{week}_{away_team}_AT_{home_team}
+```
+
+Example:
+
+```python
+from survivor.game_ids import build_game_id, parse_game_id
+
+game_id = build_game_id(2026, 1, "Baltimore Ravens", "Kansas City")
+# "2026_W01_BAL_AT_KC"
+parse_game_id(game_id)
+```
+
+Schedule normalization accepts common column names such as `home`, `homeTeam`,
+`awayTeam`, `kickoffTime`, and the fallback pair `favorite` / `underdog`.
+It writes canonical `week`, `game_id`, `home_team`, and `away_team` columns:
+
+```python
+import pandas as pd
+from survivor.loaders import normalize_schedule_df
+
+raw = pd.read_csv("raw_schedule.csv")
+schedule = normalize_schedule_df(raw, season=2026)
+```
+
+Canonical IDs matter because every downstream table eventually needs to join
+schedule rows, odds, public picks, simulation outcomes, reports, and portfolio
+allocations without depending on provider-specific spellings like `K.C.`,
+`Kansas City`, or `Chiefs`.
 
 ## Run Weekly Rankings
 
@@ -261,9 +320,13 @@ heuristic allocation layer with diversification and correlated-risk metrics.
 Phase 4 real-data templates and validation: implemented for manual schedule,
 odds, public-pick, entry, pool-history, and double-pick-week CSVs.
 
-Phase 5 ownership forecasting and ingestion adapters: project public pick
+Phase 5 canonical team and game identity layer: implemented for NFL team
+aliases, deterministic game IDs, schedule normalization, schedule integrity
+validation, game-window classification, and bye-week helpers.
+
+Phase 6 ownership forecasting and ingestion adapters: project public pick
 percentages before they are known and add validated ingestion adapters for real
 odds and public-pick exports, without secrets in the repo.
 
-Phase 6 dashboard: build an interactive UI for rankings, reports, scenarios,
+Phase 7 dashboard: build an interactive UI for rankings, reports, scenarios,
 and portfolio recommendations.
