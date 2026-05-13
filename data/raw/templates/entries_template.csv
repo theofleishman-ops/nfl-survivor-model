@@ -1,0 +1,5 @@
+entry_id,owner_name,active,used_teams
+E001,Entry 1,true,
+E002,Entry 2,true,BUF
+E003,Entry 3,false,KC;PHI
+E004,Entry 4,yes,

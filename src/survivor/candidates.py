@@ -103,6 +103,19 @@ def _used_teams_for_entry(
         return set()
 
     entries = entries_df.copy()
+    if "used_teams" in entries.columns:
+        if entry_id is not None:
+            if "entry_id" not in entries.columns:
+                raise ValueError("entries data needs entry_id when entry_id is provided.")
+            entries = entries[entries["entry_id"] == entry_id]
+        elif "entry_id" in entries.columns and entries["entry_id"].nunique() > 1:
+            return set()
+
+        used_teams: set[str] = set()
+        for value in entries["used_teams"]:
+            used_teams.update(_parse_used_teams(value))
+        return used_teams
+
     _require_columns(entries, {"week", "team_picked"}, "entries")
     entries["week"] = pd.to_numeric(entries["week"], errors="raise").astype(int)
     previous_picks = entries[entries["week"] < int(week)]
@@ -115,6 +128,15 @@ def _used_teams_for_entry(
         return set()
 
     return set(previous_picks["team_picked"].dropna().astype(str))
+
+
+def _parse_used_teams(value: object) -> set[str]:
+    if value is None or pd.isna(value):
+        return set()
+    text = str(value).strip()
+    if not text:
+        return set()
+    return {team.strip() for team in text.split(";") if team.strip()}
 
 
 def _require_columns(df: pd.DataFrame, required_columns: set[str], label: str) -> None:
