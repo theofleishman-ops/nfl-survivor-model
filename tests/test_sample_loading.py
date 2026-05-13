@@ -31,8 +31,8 @@ def test_load_schedule_sample():
 
     assert len(rows) == 16
     assert rows[0]["week"] == 1
-    assert rows[0]["game_id"] == "FAKE-2026-W01-001"
-    assert rows[0]["home_team"] == "Atlas"
+    assert rows[0]["game_id"] == "2026_W01_LAC_AT_KC"
+    assert rows[0]["home_team"] == "KC"
 
 
 def test_load_public_picks_sample():
