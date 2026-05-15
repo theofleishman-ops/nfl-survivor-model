@@ -548,4 +548,17 @@ def schedule_df_for_csv(df: pd.DataFrame) -> pd.DataFrame:
     output = df.copy()
     if "kickoff" in output.columns and is_datetime64_any_dtype(output["kickoff"]):
         output["kickoff"] = output["kickoff"].dt.strftime("%Y-%m-%dT%H:%M:%S")
-    return output
+
+    preferred_columns = (
+        "season",
+        "week",
+        "game_id",
+        "away_team",
+        "home_team",
+        "kickoff_at",
+        "game_window",
+        "kickoff",
+    )
+    ordered_columns = [column for column in preferred_columns if column in output.columns]
+    ordered_columns.extend(column for column in output.columns if column not in ordered_columns)
+    return output[ordered_columns]

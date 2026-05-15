@@ -34,13 +34,15 @@ BOOL_FALSE_VALUES = {"false", "f", "0", "no", "n", "inactive", "dead"}
 
 SCHEDULE_SCHEMA = CsvSchema(
     required_columns=("week", "game_id", "home_team", "away_team"),
-    optional_columns=("kickoff", "season"),
+    optional_columns=("kickoff", "kickoff_at", "game_window", "season"),
     column_types={
         "week": "positive integer",
         "game_id": "string",
         "home_team": "string",
         "away_team": "string",
         "kickoff": "optional string or timestamp",
+        "kickoff_at": "optional kickoff timestamp or TBD marker",
+        "game_window": "optional coarse game window label",
         "season": "optional NFL season year",
     },
 )
