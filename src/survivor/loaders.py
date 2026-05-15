@@ -44,6 +44,12 @@ SEASON_FILE_NAMES = {
     "pool_history": "pool_history.csv",
     "double_pick_weeks": "double_pick_weeks.csv",
 }
+SAMPLE_FILE_NAMES = {
+    "schedule": ("schedule_sample.csv", "schedule.csv"),
+    "odds": ("odds_sample.csv", "odds.csv"),
+    "public_picks": ("public_picks_sample.csv", "public_picks.csv"),
+    "entries": ("entries_sample.csv", "entries.csv"),
+}
 
 
 def load_schedule_df(path: str | Path) -> pd.DataFrame:
@@ -151,13 +157,20 @@ def load_double_pick_weeks_df(path: str | Path) -> pd.DataFrame:
 
 
 def load_sample_data(sample_dir: str | Path = SAMPLE_DATA_DIR) -> dict[str, pd.DataFrame]:
-    """Load the checked-in sample data bundle used by tests and the CLI."""
+    """Load a checked-in sample data bundle used by tests and the CLI.
+
+    Legacy sample bundles use ``*_sample.csv`` names.  Sanitized real-season
+    fixtures use the same standard names as a real season workspace, such as
+    ``schedule.csv`` and ``odds.csv``.
+    """
     base = Path(sample_dir)
     return {
-        "schedule": load_schedule_df(base / "schedule_sample.csv"),
-        "odds": load_odds_df(base / "odds_sample.csv"),
-        "public_picks": load_public_picks_df(base / "public_picks_sample.csv"),
-        "entries": load_entries_df(base / "entries_sample.csv"),
+        "schedule": load_schedule_df(_resolve_sample_file(base, "schedule")),
+        "odds": load_odds_df(_resolve_sample_file(base, "odds")),
+        "public_picks": load_public_picks_df(
+            _resolve_sample_file(base, "public_picks"),
+        ),
+        "entries": load_entries_df(_resolve_sample_file(base, "entries")),
     }
 
 
@@ -309,6 +322,17 @@ def _read_csv(path: str | Path) -> pd.DataFrame:
     if df.empty:
         raise ValueError(f"{csv_path} did not contain any rows.")
     return df
+
+
+def _resolve_sample_file(base: Path, dataset: str) -> Path:
+    candidates = SAMPLE_FILE_NAMES[dataset]
+    for file_name in candidates:
+        path = base / file_name
+        if path.exists():
+            return path
+
+    searched = ", ".join(str(base / file_name) for file_name in candidates)
+    raise FileNotFoundError(f"Required sample data file not found. Tried: {searched}")
 
 
 def _find_public_pick_column(df: pd.DataFrame, path: str | Path) -> str:

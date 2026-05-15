@@ -11,8 +11,9 @@ and upset leverage. Phase 3 adds a multi-entry portfolio optimizer for roughly
 helpers, and season-aware loaders. Phase 5 adds canonical NFL team and game
 identity helpers so future schedule, odds, and public-pick files can join on
 stable IDs. Phase 6 imports the official 2026 NFL regular-season schedule into
-the real-data workspace using those canonical IDs. It does not scrape websites,
-ingest live feeds, or build a dashboard.
+the real-data workspace using those canonical IDs. Phase 7 adds a sanitized
+real Week 1 fixture that exercises the real-data pipeline without private pool
+data. It does not scrape websites, ingest live feeds, or build a dashboard.
 
 The real 2026 schedule is included. No real odds, real pool data, secrets, API
 keys, or scraping code are included.
@@ -84,6 +85,41 @@ Validation checks each file's schema and also verifies that odds `game_id`
 values join to the schedule and public-pick teams are actually scheduled in the
 same week. Template odds copied into the real 2026 folder should fail until they
 are replaced with odds for the imported 2026 schedule.
+
+## Real Week 1 Fixture
+
+A small sanitized fixture lives in:
+
+```text
+data/sample/real_week_1/
+```
+
+It contains real 2026 Week 1 schedule rows and canonical game IDs copied from
+`data/raw/2026/schedule.csv`. The odds and public-pick values are synthetic
+placeholders, clearly marked with `SYNTHETIC_FIXTURE`, and exist only to prove
+that the real-data join path, rankings, simulations, and portfolio optimizer
+can run end to end. Do not use those synthetic values for real contest
+decisions.
+
+Run the fixture:
+
+```powershell
+python scripts/validate_data_files.py --data-dir data/sample/real_week_1
+python scripts/run_weekly_rankings.py --week 1 --data-dir data/sample/real_week_1
+python scripts/run_simulations.py --week 1 --data-dir data/sample/real_week_1 --simulations 1000
+python scripts/run_portfolio_optimizer.py --week 1 --data-dir data/sample/real_week_1 --entries 40 --aggression balanced
+```
+
+To replace the synthetic values, edit `data/sample/real_week_1/odds.csv` or
+copy it to a private season workspace and replace `home_moneyline` and
+`away_moneyline` with real American odds for the same `game_id`, `week`,
+`home_team`, and `away_team`. Edit `public_picks.csv` with real decimal public
+pick shares for teams scheduled in Week 1, keeping each value between `0` and
+`1` and the Week 1 total at or below `1.0`. Then run:
+
+```powershell
+python scripts/validate_data_files.py --data-dir data/sample/real_week_1
+```
 
 Normalize an exported schedule before using it:
 
@@ -355,9 +391,12 @@ Phase 5 canonical team and game identity layer: implemented for NFL team
 aliases, deterministic game IDs, schedule normalization, schedule integrity
 validation, game-window classification, and bye-week helpers.
 
-Phase 6 ownership forecasting and ingestion adapters: project public pick
-percentages before they are known and add validated ingestion adapters for real
-odds and public-pick exports, without secrets in the repo.
+Phase 6 real 2026 schedule import: implemented with canonical game IDs,
+schedule validation, game-window classification, and bye-week helpers.
 
-Phase 7 dashboard: build an interactive UI for rankings, reports, scenarios,
-and portfolio recommendations.
+Phase 7 sanitized real-week fixture workflow: implemented for real Week 1
+schedule joins with synthetic odds and public-pick values.
+
+Future work: add ownership forecasting, ingestion adapters for manually
+exported odds and public-pick files, and an interactive dashboard without
+secrets, scraping, or live feeds in the repo.
