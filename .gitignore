@@ -31,7 +31,10 @@ data/raw/*
 !data/raw/templates/
 !data/raw/templates/*.csv
 !data/raw/2026/
+data/raw/2026/*
 !data/raw/2026/schedule.csv
+!data/sample/
+!data/sample/**
 data/processed/*
 !data/processed/.gitkeep
 outputs/reports/*
