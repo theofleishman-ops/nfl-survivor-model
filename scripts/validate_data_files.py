@@ -16,10 +16,12 @@ if str(SRC_DIR) not in sys.path:
     sys.path.insert(0, str(SRC_DIR))
 
 from survivor.schemas import (  # noqa: E402
+    validate_odds_schedule_relationship,
     validate_double_pick_weeks_df,
     validate_entries_df,
     validate_odds_df,
     validate_pool_history_df,
+    validate_public_picks_schedule_relationship,
     validate_public_picks_df,
     validate_schedule_df,
 )
@@ -61,6 +63,7 @@ def validate_data_dir(data_dir: Path) -> int:
         return 1
 
     failed = False
+    loaded_frames: dict[str, pd.DataFrame] = {}
     for dataset, validator in DATASET_VALIDATORS.items():
         path = _find_dataset_file(data_dir, dataset)
         if path is None:
@@ -72,7 +75,9 @@ def validate_data_dir(data_dir: Path) -> int:
                 print(f"SKIP {dataset}: optional file not present")
             continue
 
-        errors = _validate_file(path, validator)
+        errors, df = _validate_file(path, validator)
+        if df is not None:
+            loaded_frames[dataset] = df
         if errors:
             failed = True
             print(f"FAIL {dataset}: {path}")
@@ -80,6 +85,16 @@ def validate_data_dir(data_dir: Path) -> int:
                 print(f"  - {error}")
         else:
             print(f"PASS {dataset}: {path}")
+
+    relationship_errors = _validate_cross_file_relationships(loaded_frames)
+    for label, errors in relationship_errors.items():
+        if errors:
+            failed = True
+            print(f"FAIL {label}: {data_dir}")
+            for error in errors:
+                print(f"  - {error}")
+        else:
+            print(f"PASS {label}: {data_dir}")
 
     return 1 if failed else 0
 
@@ -89,16 +104,39 @@ def _find_dataset_file(data_dir: Path, dataset: str) -> Path | None:
     return next((path for path in candidates if path.exists()), None)
 
 
-def _validate_file(path: Path, validator: Validator) -> list[str]:
+def _validate_file(path: Path, validator: Validator) -> tuple[list[str], pd.DataFrame | None]:
     try:
         df = pd.read_csv(path)
     except Exception as exc:  # pragma: no cover - pandas includes parser details
-        return [f"could not read CSV: {exc}"]
+        return [f"could not read CSV: {exc}"], None
 
     errors: list[str] = []
     if df.empty:
         errors.append("file has a header but no data rows.")
     errors.extend(validator(df))
+    return errors, df
+
+
+def _validate_cross_file_relationships(
+    loaded_frames: dict[str, pd.DataFrame],
+) -> dict[str, list[str]]:
+    if "schedule" not in loaded_frames:
+        return {}
+
+    schedule = loaded_frames["schedule"]
+    errors: dict[str, list[str]] = {}
+    if "odds" in loaded_frames:
+        errors["odds_vs_schedule"] = validate_odds_schedule_relationship(
+            loaded_frames["odds"],
+            schedule,
+        )
+    if "public_picks" in loaded_frames:
+        errors["public_picks_vs_schedule"] = (
+            validate_public_picks_schedule_relationship(
+                loaded_frames["public_picks"],
+                schedule,
+            )
+        )
     return errors
 
 
