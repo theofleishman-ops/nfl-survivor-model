@@ -3,6 +3,7 @@ import sys
 from pathlib import Path
 
 import pandas as pd
+import pytest
 
 from survivor.loaders import load_season_data
 from survivor.schemas import (
@@ -59,7 +60,42 @@ def test_validate_data_files_script_passes_templates():
     )
 
     assert "PASS schedule" in result.stdout
+    assert "PASS odds_vs_schedule" in result.stdout
+    assert "PASS public_picks_vs_schedule" in result.stdout
     assert "PASS double_pick_weeks" in result.stdout
+
+
+def test_validate_data_files_script_rejects_non_joining_odds(tmp_path):
+    _run_create_workspace(tmp_path, season=2026)
+    odds_path = tmp_path / "2026" / "odds.csv"
+    odds = pd.read_csv(odds_path)
+    odds.loc[0, ["week", "game_id", "home_team", "away_team"]] = [
+        3,
+        "2026_W03_BAL_AT_KC",
+        "KC",
+        "BAL",
+    ]
+    odds.to_csv(odds_path, index=False)
+
+    result = _run_validate_workspace(tmp_path / "2026", check=False)
+
+    assert result.returncode == 1
+    assert "FAIL odds_vs_schedule" in result.stdout
+    assert "must exist in schedule" in result.stdout
+
+
+def test_validate_data_files_script_rejects_unscheduled_public_picks(tmp_path):
+    _run_create_workspace(tmp_path, season=2026)
+    public_picks_path = tmp_path / "2026" / "public_picks.csv"
+    public_picks = pd.read_csv(public_picks_path)
+    public_picks.loc[0, ["week", "team"]] = [2, "KC"]
+    public_picks.to_csv(public_picks_path, index=False)
+
+    result = _run_validate_workspace(tmp_path / "2026", check=False)
+
+    assert result.returncode == 1
+    assert "FAIL public_picks_vs_schedule" in result.stdout
+    assert "must appear in the schedule" in result.stdout
 
 
 def test_invalid_public_pick_percentage_fails():
@@ -69,6 +105,15 @@ def test_invalid_public_pick_percentage_fails():
     errors = validate_public_picks_df(df)
 
     assert any("public_pick_pct" in error and "between 0 and 1" in error for error in errors)
+
+
+def test_public_pick_week_totals_cannot_exceed_one():
+    df = pd.read_csv(TEMPLATE_DIR / "public_picks_template.csv")
+    df.loc[:, "public_pick_pct"] = [0.40, 0.35, 0.20, 0.10]
+
+    errors = validate_public_picks_df(df)
+
+    assert any("totals cannot exceed 1.0" in error for error in errors)
 
 
 def test_invalid_moneyline_fails():
@@ -121,6 +166,22 @@ def test_load_season_data_works_with_copied_template_workspace(tmp_path):
     assert data["entries_df"]["active"].dtype == bool
     assert data["pool_history_df"] is not None
     assert data["double_pick_weeks_df"] is not None
+
+
+def test_load_season_data_rejects_non_joining_odds(tmp_path):
+    _run_create_workspace(tmp_path, season=2026)
+    odds_path = tmp_path / "2026" / "odds.csv"
+    odds = pd.read_csv(odds_path)
+    odds.loc[0, ["week", "game_id", "home_team", "away_team"]] = [
+        3,
+        "2026_W03_BAL_AT_KC",
+        "KC",
+        "BAL",
+    ]
+    odds.to_csv(odds_path, index=False)
+
+    with pytest.raises(ValueError, match="season data relationships"):
+        load_season_data(season=2026, data_dir=tmp_path)
 
 
 def test_clis_still_work_with_use_sample(tmp_path):
@@ -191,4 +252,22 @@ def _run_create_workspace(tmp_path: Path, season: int) -> subprocess.CompletedPr
         text=True,
         capture_output=True,
         check=True,
+    )
+
+
+def _run_validate_workspace(
+    data_dir: Path,
+    check: bool = True,
+) -> subprocess.CompletedProcess[str]:
+    return subprocess.run(
+        [
+            sys.executable,
+            "scripts/validate_data_files.py",
+            "--data-dir",
+            str(data_dir),
+        ],
+        cwd=PROJECT_ROOT,
+        text=True,
+        capture_output=True,
+        check=check,
     )

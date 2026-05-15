@@ -210,7 +210,114 @@ def validate_public_picks_df(df: pd.DataFrame) -> list[str]:
     _validate_positive_integer_column(df, "week", "public_picks", errors)
     _validate_team_alias_columns(df, ["team"], "public_picks", errors)
     _validate_duplicates(df, ["week", "team"], "public_picks", errors)
+    if pick_column is not None:
+        _validate_public_pick_week_totals(df, pick_column, errors)
     return errors
+
+
+def validate_season_data_relationships(
+    schedule_df: pd.DataFrame,
+    odds_df: pd.DataFrame | None = None,
+    public_picks_df: pd.DataFrame | None = None,
+) -> list[str]:
+    """Validate cross-file relationships that single-file schemas cannot prove."""
+    errors: list[str] = []
+    if odds_df is not None:
+        errors.extend(validate_odds_schedule_relationship(odds_df, schedule_df))
+    if public_picks_df is not None:
+        errors.extend(
+            validate_public_picks_schedule_relationship(public_picks_df, schedule_df),
+        )
+    return errors
+
+
+def validate_odds_schedule_relationship(
+    odds_df: pd.DataFrame,
+    schedule_df: pd.DataFrame,
+) -> list[str]:
+    """Return errors for odds rows that do not join to the schedule."""
+    required_schedule = {"week", "game_id", "home_team", "away_team"}
+    required_odds = {"week", "game_id", "home_team", "away_team"}
+    if not required_schedule.issubset(schedule_df.columns) or not required_odds.issubset(
+        odds_df.columns,
+    ):
+        return []
+
+    schedule_lookup = _schedule_game_lookup(schedule_df)
+    missing_rows: list[int] = []
+    mismatch_rows: list[int] = []
+    missing_examples: list[str] = []
+
+    for index, row in odds_df.iterrows():
+        if _is_blank(row.get("game_id")):
+            continue
+        game_id = str(row["game_id"]).strip()
+        schedule_row = schedule_lookup.get(game_id)
+        if schedule_row is None:
+            missing_rows.append(int(index) + 2)
+            missing_examples.append(game_id)
+            continue
+
+        try:
+            odds_key = (
+                int(pd.to_numeric(row["week"], errors="raise")),
+                normalize_team_name(row["away_team"]),
+                normalize_team_name(row["home_team"]),
+            )
+        except (TypeError, ValueError):
+            continue
+        if odds_key != schedule_row:
+            mismatch_rows.append(int(index) + 2)
+
+    errors: list[str] = []
+    if missing_rows:
+        errors.append(
+            "odds game_id values must exist in schedule; missing schedule games on "
+            f"rows {_format_row_numbers(missing_rows)}"
+            f"{_format_examples(missing_examples)}."
+        )
+    if mismatch_rows:
+        errors.append(
+            "odds rows must match the schedule week, away_team, and home_team for "
+            f"their game_id on rows {_format_row_numbers(mismatch_rows)}."
+        )
+    return errors
+
+
+def validate_public_picks_schedule_relationship(
+    public_picks_df: pd.DataFrame,
+    schedule_df: pd.DataFrame,
+) -> list[str]:
+    """Return errors for public pick teams that are not scheduled that week."""
+    required_schedule = {"week", "home_team", "away_team"}
+    required_public = {"week", "team"}
+    if not required_schedule.issubset(schedule_df.columns) or not required_public.issubset(
+        public_picks_df.columns,
+    ):
+        return []
+
+    scheduled_teams = _scheduled_teams_by_week(schedule_df)
+    unscheduled_rows: list[int] = []
+    unscheduled_examples: list[str] = []
+    for index, row in public_picks_df.iterrows():
+        if _is_blank(row.get("week")) or _is_blank(row.get("team")):
+            continue
+        try:
+            week = int(pd.to_numeric(row["week"], errors="raise"))
+            team = normalize_team_name(row["team"])
+        except (TypeError, ValueError):
+            continue
+        if team not in scheduled_teams.get(week, set()):
+            unscheduled_rows.append(int(index) + 2)
+            unscheduled_examples.append(f"W{week}:{team}")
+
+    if not unscheduled_rows:
+        return []
+    return [
+        "public_picks teams must appear in the schedule for the same week; "
+        f"unscheduled picks on rows {_format_row_numbers(unscheduled_rows)}"
+        f"{_format_examples(unscheduled_examples)}."
+    ]
 
 
 def validate_entries_df(df: pd.DataFrame) -> list[str]:
@@ -681,6 +788,31 @@ def _validate_probability_columns_if_present(
         _validate_probability_column(df, column, label, errors)
 
 
+def _validate_public_pick_week_totals(
+    df: pd.DataFrame,
+    pick_column: str,
+    errors: list[str],
+) -> None:
+    required = {"week", "team", pick_column}
+    if not required.issubset(df.columns):
+        return
+
+    values = pd.to_numeric(df[pick_column], errors="coerce")
+    weeks = pd.to_numeric(df["week"], errors="coerce")
+    valid = values.notna() & weeks.notna()
+    if not bool(valid.any()):
+        return
+
+    totals = values.loc[valid].groupby(weeks.loc[valid].astype(int)).sum()
+    invalid_weeks = [int(week) for week, total in totals.items() if float(total) > 1.000001]
+    if invalid_weeks:
+        errors.append(
+            "public_picks public_pick_pct totals cannot exceed 1.0 within a week; "
+            f"invalid weeks: {', '.join(str(week) for week in invalid_weeks[:5])}"
+            f"{', and ' + str(len(invalid_weeks) - 5) + ' more' if len(invalid_weeks) > 5 else ''}."
+        )
+
+
 def _validate_boolish_column(
     df: pd.DataFrame,
     column: str,
@@ -790,6 +922,35 @@ def _validate_entries_survived_not_greater_than_start(
         )
 
 
+def _schedule_game_lookup(df: pd.DataFrame) -> dict[str, tuple[int, str, str]]:
+    lookup: dict[str, tuple[int, str, str]] = {}
+    for _, row in df.iterrows():
+        if _is_blank(row.get("game_id")):
+            continue
+        try:
+            lookup[str(row["game_id"]).strip()] = (
+                int(pd.to_numeric(row["week"], errors="raise")),
+                normalize_team_name(row["away_team"]),
+                normalize_team_name(row["home_team"]),
+            )
+        except (TypeError, ValueError):
+            continue
+    return lookup
+
+
+def _scheduled_teams_by_week(df: pd.DataFrame) -> dict[int, set[str]]:
+    teams_by_week: dict[int, set[str]] = {}
+    for _, row in df.iterrows():
+        try:
+            week = int(pd.to_numeric(row["week"], errors="raise"))
+            home = normalize_team_name(row["home_team"])
+            away = normalize_team_name(row["away_team"])
+        except (TypeError, ValueError):
+            continue
+        teams_by_week.setdefault(week, set()).update({home, away})
+    return teams_by_week
+
+
 def _public_pick_column(df: pd.DataFrame) -> str | None:
     for column in PUBLIC_PICK_ALIASES:
         if column in df.columns:
@@ -824,3 +985,16 @@ def _format_row_numbers(row_numbers: list[int], limit: int = 5) -> str:
     shown = row_numbers[:limit]
     suffix = f", and {len(row_numbers) - limit} more" if len(row_numbers) > limit else ""
     return ", ".join(str(row) for row in shown) + suffix
+
+
+def _format_examples(values: list[str], limit: int = 3) -> str:
+    if not values:
+        return ""
+    unique_values = list(dict.fromkeys(values))
+    shown = ", ".join(unique_values[:limit])
+    suffix = (
+        f", and {len(unique_values) - limit} more"
+        if len(unique_values) > limit
+        else ""
+    )
+    return f" ({shown}{suffix})"

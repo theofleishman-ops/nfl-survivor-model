@@ -23,6 +23,7 @@ from survivor.schemas import (
     validate_pool_history_df,
     validate_public_picks_df,
     validate_schedule_df,
+    validate_season_data_relationships,
 )
 from survivor.teams import normalize_team_name
 
@@ -218,6 +219,19 @@ def load_season_data(
             continue
 
         loaded[key] = loader(path) if validate else _read_csv(path)
+
+    if validate:
+        relationship_errors = validate_season_data_relationships(
+            schedule_df=loaded["schedule_df"],
+            odds_df=loaded["odds_df"],
+            public_picks_df=loaded["public_picks_df"],
+        )
+        validate_or_raise(
+            "season data relationships",
+            pd.DataFrame(),
+            relationship_errors,
+            str(base),
+        )
 
     return loaded
 

@@ -69,11 +69,21 @@ data/raw/2026/pool_history.csv
 data/raw/2026/double_pick_weeks.csv
 ```
 
+Only `data/raw/2026/schedule.csv` is meant to be versioned for the real 2026
+workspace. Keep odds, public picks, entries, pool history, and double-pick-week
+files local unless you intentionally create sanitized fixtures under
+`data/raw/templates/`.
+
 Validate the season files:
 
 ```powershell
 python scripts/validate_data_files.py --data-dir data/raw/2026
 ```
+
+Validation checks each file's schema and also verifies that odds `game_id`
+values join to the schedule and public-pick teams are actually scheduled in the
+same week. Template odds copied into the real 2026 folder should fail until they
+are replaced with odds for the imported 2026 schedule.
 
 Normalize an exported schedule before using it:
 
@@ -81,10 +91,11 @@ Normalize an exported schedule before using it:
 python scripts/normalize_schedule_file.py --input raw_schedule.csv --output normalized_schedule.csv --season 2026
 ```
 
-For the checked-in 2026 schedule, validate the imported workspace with:
+For the checked-in 2026 schedule, validate the schedule file through tests or
+validate the full workspace after the private odds and pool files have been
+filled with rows matching that schedule:
 
 ```powershell
-python scripts/normalize_schedule_file.py --input data/raw/2026/schedule.csv --output data/raw/2026/schedule.csv --season 2026
 python scripts/validate_data_files.py --data-dir data/raw/2026
 ```
 
