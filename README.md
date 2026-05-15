@@ -10,10 +10,12 @@ and upset leverage. Phase 3 adds a multi-entry portfolio optimizer for roughly
 40 personal entries. Phase 4 adds real-data CSV templates, validation, import
 helpers, and season-aware loaders. Phase 5 adds canonical NFL team and game
 identity helpers so future schedule, odds, and public-pick files can join on
-stable IDs. It does not scrape websites, ingest live feeds, or build a
-dashboard.
+stable IDs. Phase 6 imports the official 2026 NFL regular-season schedule into
+the real-data workspace using those canonical IDs. It does not scrape websites,
+ingest live feeds, or build a dashboard.
 
-No real odds, real pool data, secrets, API keys, or scraping code are included.
+The real 2026 schedule is included. No real odds, real pool data, secrets, API
+keys, or scraping code are included.
 
 ## Install
 
@@ -42,10 +44,19 @@ Create a season workspace from the small templates:
 python scripts/create_real_data_workspace.py --season 2026
 ```
 
-Fill these CSVs:
+The official 2026 regular-season schedule has already been imported into:
 
 ```text
 data/raw/2026/schedule.csv
+```
+
+The schedule uses canonical team abbreviations, canonical game IDs, and
+explicit `TBD` values for late-season flex games whose kickoff dates/times have
+not yet been assigned by the NFL.
+
+Fill or replace these CSVs before running real rankings:
+
+```text
 data/raw/2026/odds.csv
 data/raw/2026/public_picks.csv
 data/raw/2026/entries.csv
@@ -70,7 +81,16 @@ Normalize an exported schedule before using it:
 python scripts/normalize_schedule_file.py --input raw_schedule.csv --output normalized_schedule.csv --season 2026
 ```
 
-Run the model against the real-data workspace:
+For the checked-in 2026 schedule, validate the imported workspace with:
+
+```powershell
+python scripts/normalize_schedule_file.py --input data/raw/2026/schedule.csv --output data/raw/2026/schedule.csv --season 2026
+python scripts/validate_data_files.py --data-dir data/raw/2026
+```
+
+Run the model against the real-data workspace once `odds.csv`,
+`public_picks.csv`, and `entries.csv` have been filled with real contest data
+that matches the schedule game IDs:
 
 ```powershell
 python scripts/run_weekly_rankings.py --week 1 --season 2026 --data-dir data/raw
