@@ -14,11 +14,12 @@ stable IDs. Phase 6 imports the official 2026 NFL regular-season schedule into
 the real-data workspace using those canonical IDs. Phase 7 adds a sanitized
 real Week 1 fixture that exercises the real-data pipeline without private pool
 data. Phase 8 adds a provider-agnostic odds ingestion foundation for manual
-CSV/JSON imports and future API or plugin adapters. It does not scrape
-websites, ingest live feeds, or build a dashboard.
+CSV/JSON imports and future API or plugin adapters. Phase 9 adds automated NFL
+odds import from The Odds API. It does not scrape websites or build a
+dashboard.
 
 The real 2026 schedule is included. No real odds, real pool data, secrets, API
-keys, or scraping code are included.
+keys, raw API responses, or scraping code are included.
 
 ## Install
 
@@ -36,10 +37,11 @@ pytest
 
 ## Real Data Workflow
 
-This project still has no scraping, APIs, secrets, or live feeds. Paste or
-export CSVs from trusted sources into the local files below, then validate them
-before running the model. Public pick percentages should be decimals, e.g.
-`0.38` for 38%. Moneylines should be American odds, e.g. `-350` or `+220`.
+This project still has no scraping, committed secrets, or committed live-feed
+data. Paste or export CSVs from trusted sources, or import odds from The Odds
+API at runtime, then validate the local files before running the model. Public
+pick percentages should be decimals, e.g. `0.38` for 38%. Moneylines should be
+American odds, e.g. `-350` or `+220`.
 
 Create a season workspace from the small templates:
 
@@ -176,17 +178,58 @@ python scripts/import_odds.py --input odds_raw.csv --format csv --season 2026 --
 python scripts/import_odds.py --input odds_raw.json --format json --season 2026 --schedule data/raw/2026/schedule.csv --output data/raw/2026/odds.csv
 ```
 
+Automated NFL odds import from The Odds API also works. Create an account and
+API key at:
+
+```text
+https://the-odds-api.com/
+```
+
+Set the key for the current PowerShell session only:
+
+```powershell
+$env:THE_ODDS_API_KEY = "paste-your-api-key-here"
+```
+
+Then import a week:
+
+```powershell
+python scripts/import_odds.py --provider the-odds-api --season 2026 --week 1 --schedule data/raw/2026/schedule.csv --output data/raw/2026/odds.csv --regions us --markets h2h,spreads,totals --odds-format american --sportsbook fanduel,draftkings,betmgm
+```
+
+Use `--dry-run` to fetch, normalize, validate, and preview rows without writing
+`odds.csv`. Use `--no-write` to validate silently without writing. Raw API
+responses are not saved by default. If you need debug output, pass an explicit
+ignored path such as:
+
+```powershell
+python scripts/import_odds.py --provider the-odds-api --season 2026 --week 1 --schedule data/raw/2026/schedule.csv --output data/raw/2026/odds.csv --save-raw .odds-api-raw/week1.json --dry-run
+```
+
+Never commit API keys, `.env` files, shell history containing keys, or raw API
+responses. Sanitized mock responses for tests may live under `tests/fixtures/`;
+private live responses should stay in ignored local paths.
+
 The importer normalizes team aliases, joins to canonical `game_id` values,
 calculates implied probabilities, creates no-vig probabilities when both
 moneyline sides are present, writes normalized CSV, and validates the output
 against the schedule.
 
-Future API providers should implement the `OddsProvider` protocol in
-`src/survivor/odds_providers/base.py` and normalize their records through
-`src/survivor/odds_ingestion.py`. A stub for The Odds API lives in
-`src/survivor/odds_providers/the_odds_api.py`; it fails clearly if
-`THE_ODDS_API_KEY` is not supplied at runtime. Do not commit API keys, secrets,
-or downloaded private data.
+The Odds API provider lives in `src/survivor/odds_providers/the_odds_api.py`.
+It reads `THE_ODDS_API_KEY` only from the runtime environment or an explicit
+constructor argument used in tests; no keys are stored in the repo.
+
+Current limitations:
+
+- The provider uses The Odds API's current `/v4/sports/americanfootball_nfl/odds`
+  endpoint, so it can only import markets that the API is currently returning.
+- `--week` is required so current API events can be matched to the local 2026
+  schedule by canonical home and away teams.
+- Supported game markets are `h2h`, `spreads`, and `totals`; unsupported market
+  names are ignored when at least one supported market remains.
+- The normalized schema is team-oriented. Totals are retained as game-total rows
+  using the home-team row for the over price and the away-team row for the under
+  price.
 
 FanDuel or another sportsbook can be added later as a plugin that outputs raw
 provider records for this normalizer. Keep that plugin separate from the core
@@ -449,6 +492,9 @@ Phase 8 odds ingestion foundation: implemented for provider-agnostic normalized
 odds, manual CSV/JSON imports, provider interfaces, API stubs, and simple
 futures-derived team-strength priors.
 
-Future work: add ownership forecasting, implemented API adapters, optional
-sportsbook scraper plugins, and an interactive dashboard without secrets,
-committed private data, or scraping in the core model.
+Phase 9 The Odds API provider: implemented for current NFL `h2h`, `spreads`,
+and `totals` odds with environment-based secrets and mocked HTTP tests.
+
+Future work: add ownership forecasting, more API adapters, optional sportsbook
+scraper plugins, and an interactive dashboard without secrets, committed
+private data, or scraping in the core model.

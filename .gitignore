@@ -24,6 +24,8 @@ outputs/pytest-tmp/
 # Local environment and secrets
 .env
 .env.*
+.odds-api-raw/
+*.the-odds-api-raw.json
 
 # Local data and generated outputs
 data/raw/*
