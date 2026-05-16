@@ -1,0 +1,11 @@
+season,week,team,game_id,source,ownership_pct,sample_size,pulled_at,notes
+2026,1,Kansas City Chiefs,2026_W01_DEN_AT_KC,espn,0.17,35000,2026-09-08T12:05:00Z,synthetic fixture
+2026,1,Philadelphia Eagles,2026_W01_WAS_AT_PHI,espn,0.13,35000,2026-09-08T12:05:00Z,synthetic fixture
+2026,1,Detroit Lions,2026_W01_NO_AT_DET,espn,0.10,35000,2026-09-08T12:05:00Z,synthetic fixture
+2026,1,Seattle Seahawks,2026_W01_NE_AT_SEA,espn,0.07,35000,2026-09-08T12:05:00Z,synthetic fixture
+2026,1,Cincinnati Bengals,2026_W01_TB_AT_CIN,espn,0.06,35000,2026-09-08T12:05:00Z,synthetic fixture
+2026,1,Pittsburgh Steelers,2026_W01_ATL_AT_PIT,espn,0.06,35000,2026-09-08T12:05:00Z,synthetic fixture
+2026,1,Baltimore Ravens,2026_W01_BAL_AT_IND,espn,0.05,35000,2026-09-08T12:05:00Z,synthetic fixture
+2026,1,LA Chargers,2026_W01_ARI_AT_LAC,espn,0.05,35000,2026-09-08T12:05:00Z,synthetic fixture
+2026,1,Buffalo Bills,2026_W01_BUF_AT_HOU,espn,0.04,35000,2026-09-08T12:05:00Z,synthetic fixture
+2026,1,Jacksonville Jaguars,2026_W01_CLE_AT_JAX,espn,0.03,35000,2026-09-08T12:05:00Z,synthetic fixture

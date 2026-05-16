@@ -15,8 +15,9 @@ the real-data workspace using those canonical IDs. Phase 7 adds a sanitized
 real Week 1 fixture that exercises the real-data pipeline without private pool
 data. Phase 8 adds a provider-agnostic odds ingestion foundation for manual
 CSV/JSON imports and future API or plugin adapters. Phase 9 adds automated NFL
-odds import from The Odds API. It does not scrape websites or build a
-dashboard.
+odds import from The Odds API. Phase 10 adds provider-agnostic public pick
+ingestion for manual CSV/JSON ownership exports and consensus aggregation. It
+does not scrape websites or build a dashboard.
 
 The real 2026 schedule is included. No real odds, real pool data, secrets, API
 keys, raw API responses, or scraping code are included.
@@ -39,9 +40,10 @@ pytest
 
 This project still has no scraping, committed secrets, or committed live-feed
 data. Paste or export CSVs from trusted sources, or import odds from The Odds
-API at runtime, then validate the local files before running the model. Public
-pick percentages should be decimals, e.g. `0.38` for 38%. Moneylines should be
-American odds, e.g. `-350` or `+220`.
+API at runtime, import public pick ownership from manual CSV/JSON exports, then
+validate the local files before running the model. Public pick percentages
+should be decimals, e.g. `0.38` for 38%. Moneylines should be American odds,
+e.g. `-350` or `+220`.
 
 Create a season workspace from the small templates:
 
@@ -241,6 +243,63 @@ Recommended odds workflow:
 2. Import and normalize with `scripts/import_odds.py`.
 3. Validate with `scripts/validate_data_files.py --data-dir data/raw/2026`.
 4. Run rankings, simulations, and portfolio optimization.
+
+## Public Pick Ingestion
+
+Public ownership is the model's field estimate: rankings use it for leverage,
+simulations use it to estimate public-field eliminations, and the portfolio
+optimizer uses it to avoid being overexposed to fragile chalk.
+
+The normalized source schema is:
+
+```text
+season, week, team, opponent, game_id, source, public_pick_pct,
+sample_size, pulled_at, notes
+```
+
+`sample_size`, `pulled_at`, and `notes` are optional. Team aliases such as
+`Chiefs`, `Kansas City Chiefs`, and `K.C.` normalize to canonical teams, and
+each row is joined to `schedule.csv` by team/week or `game_id`. Teams not
+playing that week fail validation. `public_pick_pct` must be between `0` and
+`1`; strings like `18%` are accepted, but bare numeric values should be
+decimals such as `0.18`.
+
+Manual CSV and JSON imports work today:
+
+```powershell
+python scripts/import_public_picks.py --input raw_public_picks.csv --format csv --season 2026 --week 1 --source yahoo --schedule data/raw/2026/schedule.csv --output data/raw/2026/public_picks.csv --aggregate
+python scripts/import_public_picks.py --input raw_public_picks.json --format json --season 2026 --week 1 --source espn --schedule data/raw/2026/schedule.csv --output data/raw/2026/public_picks.csv --aggregate
+```
+
+You can also pass multiple same-format source files and aggregate them in one
+run:
+
+```powershell
+python scripts/import_public_picks.py --input data/sample/public_pick_sources/yahoo_week1_public_picks.csv data/sample/public_pick_sources/espn_week1_public_picks.csv data/sample/public_pick_sources/survivorgrid_week1_public_picks.csv --format csv --season 2026 --week 1 --schedule data/raw/2026/schedule.csv --output data/raw/2026/public_picks.csv --aggregate --dry-run
+```
+
+Aggregation writes `consensus_public_pick_pct` and also mirrors that value into
+`public_pick_pct` so the existing ranking, simulation, and portfolio workflows
+can consume the file directly. The initial method is a simple average across
+sources. If every source row for a team has a positive `sample_size`, the
+consensus is sample-size weighted. A source's weekly total may be below `1.0`
+because some sites show only top picks; a source total materially above `1.0`
+fails validation.
+
+The provider interface lives under `src/survivor/public_pick_providers/` so
+future Yahoo, ESPN, OfficeFootballPool, SurvivorGrid, RunYourPool, or custom
+pool-history adapters can be added without changing the normalizer. No
+scraping, API keys, private pool data, or website-specific logic is included.
+
+Synthetic examples live in:
+
+```text
+data/sample/public_pick_sources/
+data/sample/real_week_1/public_picks_consensus.csv
+```
+
+Those values are fake fixtures for deterministic tests and demos, not real
+public ownership.
 
 ## Canonical Team And Game IDs
 
@@ -495,6 +554,10 @@ futures-derived team-strength priors.
 Phase 9 The Odds API provider: implemented for current NFL `h2h`, `spreads`,
 and `totals` odds with environment-based secrets and mocked HTTP tests.
 
-Future work: add ownership forecasting, more API adapters, optional sportsbook
-scraper plugins, and an interactive dashboard without secrets, committed
-private data, or scraping in the core model.
+Phase 10 public pick ingestion foundation: implemented for manual CSV/JSON
+ownership imports, source-aware schedule validation, provider interfaces, and
+simple or sample-size weighted consensus aggregation.
+
+Future work: add ownership forecasting, more API adapters, optional scraper
+plugins, and an interactive dashboard without secrets, committed private data,
+or scraping in the core model.

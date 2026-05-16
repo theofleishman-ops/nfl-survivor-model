@@ -1,0 +1,11 @@
+season,week,team,game_id,source,pick_share,sample_size,pulled_at,notes
+2026,1,KC,2026_W01_DEN_AT_KC,survivorgrid,0.16,12000,2026-09-08T12:10:00Z,synthetic fixture
+2026,1,PHI,2026_W01_WAS_AT_PHI,survivorgrid,0.15,12000,2026-09-08T12:10:00Z,synthetic fixture
+2026,1,SEA,2026_W01_NE_AT_SEA,survivorgrid,0.09,12000,2026-09-08T12:10:00Z,synthetic fixture
+2026,1,DET,2026_W01_NO_AT_DET,survivorgrid,0.09,12000,2026-09-08T12:10:00Z,synthetic fixture
+2026,1,LAC,2026_W01_ARI_AT_LAC,survivorgrid,0.06,12000,2026-09-08T12:10:00Z,synthetic fixture
+2026,1,BAL,2026_W01_BAL_AT_IND,survivorgrid,0.06,12000,2026-09-08T12:10:00Z,synthetic fixture
+2026,1,BUF,2026_W01_BUF_AT_HOU,survivorgrid,0.05,12000,2026-09-08T12:10:00Z,synthetic fixture
+2026,1,PIT,2026_W01_ATL_AT_PIT,survivorgrid,0.05,12000,2026-09-08T12:10:00Z,synthetic fixture
+2026,1,CIN,2026_W01_TB_AT_CIN,survivorgrid,0.04,12000,2026-09-08T12:10:00Z,synthetic fixture
+2026,1,MIN,2026_W01_GB_AT_MIN,survivorgrid,0.03,12000,2026-09-08T12:10:00Z,synthetic fixture
