@@ -13,7 +13,9 @@ identity helpers so future schedule, odds, and public-pick files can join on
 stable IDs. Phase 6 imports the official 2026 NFL regular-season schedule into
 the real-data workspace using those canonical IDs. Phase 7 adds a sanitized
 real Week 1 fixture that exercises the real-data pipeline without private pool
-data. It does not scrape websites, ingest live feeds, or build a dashboard.
+data. Phase 8 adds a provider-agnostic odds ingestion foundation for manual
+CSV/JSON imports and future API or plugin adapters. It does not scrape
+websites, ingest live feeds, or build a dashboard.
 
 The real 2026 schedule is included. No real odds, real pool data, secrets, API
 keys, or scraping code are included.
@@ -150,6 +152,52 @@ The template files live in:
 ```text
 data/raw/templates/
 ```
+
+## Odds Ingestion
+
+Odds ingestion is provider-agnostic by design. The model should not depend on
+one sportsbook's page structure or HTML, because those pages change often,
+carry legal/terms-of-use concerns, and are hard to test without brittle live
+network behavior. Instead, every provider adapts into one normalized schema:
+
+```text
+season, week, game_id, sportsbook, market_type, team, opponent,
+home_team, away_team, moneyline, spread, spread_price, total, total_price,
+implied_probability, no_vig_win_probability, pulled_at, source
+```
+
+Supported market types include `h2h`, `spreads`, `totals`, and futures-style
+rows for `super_bowl`, `conference`, `division`, `playoff`, and `win_total`.
+
+Manual imports work today:
+
+```powershell
+python scripts/import_odds.py --input odds_raw.csv --format csv --season 2026 --schedule data/raw/2026/schedule.csv --output data/raw/2026/odds.csv
+python scripts/import_odds.py --input odds_raw.json --format json --season 2026 --schedule data/raw/2026/schedule.csv --output data/raw/2026/odds.csv
+```
+
+The importer normalizes team aliases, joins to canonical `game_id` values,
+calculates implied probabilities, creates no-vig probabilities when both
+moneyline sides are present, writes normalized CSV, and validates the output
+against the schedule.
+
+Future API providers should implement the `OddsProvider` protocol in
+`src/survivor/odds_providers/base.py` and normalize their records through
+`src/survivor/odds_ingestion.py`. A stub for The Odds API lives in
+`src/survivor/odds_providers/the_odds_api.py`; it fails clearly if
+`THE_ODDS_API_KEY` is not supplied at runtime. Do not commit API keys, secrets,
+or downloaded private data.
+
+FanDuel or another sportsbook can be added later as a plugin that outputs raw
+provider records for this normalizer. Keep that plugin separate from the core
+model so scraping-specific risk does not become the main ingestion system.
+
+Recommended odds workflow:
+
+1. Get raw odds from a trusted manual export, JSON file, API, or future plugin.
+2. Import and normalize with `scripts/import_odds.py`.
+3. Validate with `scripts/validate_data_files.py --data-dir data/raw/2026`.
+4. Run rankings, simulations, and portfolio optimization.
 
 ## Canonical Team And Game IDs
 
@@ -397,6 +445,10 @@ schedule validation, game-window classification, and bye-week helpers.
 Phase 7 sanitized real-week fixture workflow: implemented for real Week 1
 schedule joins with synthetic odds and public-pick values.
 
-Future work: add ownership forecasting, ingestion adapters for manually
-exported odds and public-pick files, and an interactive dashboard without
-secrets, scraping, or live feeds in the repo.
+Phase 8 odds ingestion foundation: implemented for provider-agnostic normalized
+odds, manual CSV/JSON imports, provider interfaces, API stubs, and simple
+futures-derived team-strength priors.
+
+Future work: add ownership forecasting, implemented API adapters, optional
+sportsbook scraper plugins, and an interactive dashboard without secrets,
+committed private data, or scraping in the core model.
