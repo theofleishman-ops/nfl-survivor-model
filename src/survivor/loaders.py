@@ -15,6 +15,7 @@ from pandas.api.types import is_object_dtype, is_string_dtype
 from survivor.config import SAMPLE_DATA_DIR
 from survivor.game_ids import build_game_id
 from survivor.schemas import (
+    NORMALIZED_ODDS_COLUMNS,
     parse_boolish,
     validate_double_pick_weeks_df,
     validate_entries_df,
@@ -65,9 +66,12 @@ def load_schedule_df(path: str | Path) -> pd.DataFrame:
 
 
 def load_odds_df(path: str | Path) -> pd.DataFrame:
-    """Load game-level American moneyline odds from CSV."""
+    """Load game-level or normalized team-level odds from CSV."""
     df = _read_csv(path)
     validate_or_raise("odds", df, validate_odds_df(df), str(path))
+    if NORMALIZED_ODDS_COLUMNS.issubset(df.columns):
+        return _normalize_team_level_odds_df(df)
+
     df["week"] = pd.to_numeric(df["week"], errors="raise").astype(int)
     df["home_team"] = df["home_team"].map(normalize_team_name)
     df["away_team"] = df["away_team"].map(normalize_team_name)
@@ -76,6 +80,33 @@ def load_odds_df(path: str | Path) -> pd.DataFrame:
     return _strip_string_columns(df).sort_values(["week", "game_id"]).reset_index(
         drop=True,
     )
+
+
+def _normalize_team_level_odds_df(df: pd.DataFrame) -> pd.DataFrame:
+    odds = df.copy()
+    for column in ("season", "week"):
+        odds[column] = pd.to_numeric(odds[column], errors="coerce").astype("Int64")
+
+    for column in ("team", "opponent", "home_team", "away_team"):
+        present = odds[column].notna() & (odds[column].astype("string").str.strip() != "")
+        odds.loc[present, column] = odds.loc[present, column].map(normalize_team_name)
+
+    numeric_columns = [
+        "moneyline",
+        "spread",
+        "spread_price",
+        "total",
+        "total_price",
+        "implied_probability",
+        "no_vig_win_probability",
+    ]
+    for column in numeric_columns:
+        odds[column] = pd.to_numeric(odds[column], errors="coerce")
+
+    return _strip_string_columns(odds).sort_values(
+        ["season", "week", "game_id", "sportsbook", "market_type", "team"],
+        na_position="last",
+    ).reset_index(drop=True)
 
 
 def load_public_picks_df(path: str | Path) -> pd.DataFrame:

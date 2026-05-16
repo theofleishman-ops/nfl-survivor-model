@@ -67,6 +67,59 @@ ODDS_SCHEMA = CsvSchema(
     },
 )
 
+NORMALIZED_ODDS_SCHEMA = CsvSchema(
+    required_columns=(
+        "season",
+        "week",
+        "game_id",
+        "sportsbook",
+        "market_type",
+        "team",
+        "opponent",
+        "home_team",
+        "away_team",
+        "moneyline",
+        "spread",
+        "spread_price",
+        "total",
+        "total_price",
+        "implied_probability",
+        "no_vig_win_probability",
+        "pulled_at",
+        "source",
+    ),
+    column_types={
+        "season": "NFL season year",
+        "week": "positive integer for game markets",
+        "game_id": "canonical game id for game markets",
+        "sportsbook": "sportsbook or provider label",
+        "market_type": "h2h, spreads, totals, or supported futures market",
+        "team": "canonical team or accepted alias",
+        "opponent": "opponent team for game markets",
+        "home_team": "home team for game markets",
+        "away_team": "away team for game markets",
+        "moneyline": "optional American moneyline",
+        "spread": "optional spread from team's perspective",
+        "spread_price": "optional American odds for the spread",
+        "total": "optional game total or win total",
+        "total_price": "optional American odds for the total",
+        "implied_probability": "optional probability from 0 to 1",
+        "no_vig_win_probability": "optional no-vig probability from 0 to 1",
+        "pulled_at": "timestamp or export time",
+        "source": "source/provider descriptor",
+    },
+)
+
+NORMALIZED_ODDS_COLUMNS = set(NORMALIZED_ODDS_SCHEMA.required_columns)
+NORMALIZED_GAME_MARKETS = {"h2h", "moneyline", "spreads", "spread", "totals", "total"}
+NORMALIZED_FUTURES_MARKETS = {
+    "super_bowl",
+    "conference",
+    "division",
+    "playoff",
+    "win_total",
+}
+
 PUBLIC_PICKS_SCHEMA = CsvSchema(
     required_columns=("week", "team", "public_pick_pct"),
     optional_columns=("source",),
@@ -132,6 +185,7 @@ DOUBLE_PICK_WEEKS_SCHEMA = CsvSchema(
 DATASET_SCHEMAS = {
     "schedule": SCHEDULE_SCHEMA,
     "odds": ODDS_SCHEMA,
+    "normalized_odds": NORMALIZED_ODDS_SCHEMA,
     "public_picks": PUBLIC_PICKS_SCHEMA,
     "entries": ENTRIES_SCHEMA,
     "entries_history": ENTRIES_HISTORY_SCHEMA,
@@ -162,6 +216,13 @@ def validate_schedule_df(df: pd.DataFrame) -> list[str]:
 
 
 def validate_odds_df(df: pd.DataFrame) -> list[str]:
+    """Return validation errors for legacy or normalized odds CSV data."""
+    if NORMALIZED_ODDS_COLUMNS.issubset(df.columns):
+        return _validate_normalized_odds_df(df)
+    return _validate_legacy_odds_df(df)
+
+
+def _validate_legacy_odds_df(df: pd.DataFrame) -> list[str]:
     """Return validation errors for a game-level odds CSV DataFrame."""
     errors: list[str] = []
     _validate_required_columns(df, ODDS_SCHEMA.required_columns, "odds", errors)
@@ -180,6 +241,39 @@ def validate_odds_df(df: pd.DataFrame) -> list[str]:
         team_columns=["home_team", "away_team"],
         label="odds",
         errors=errors,
+    )
+    return errors
+
+
+def _validate_normalized_odds_df(df: pd.DataFrame) -> list[str]:
+    """Return validation errors for normalized team-level odds."""
+    errors: list[str] = []
+    _validate_required_columns(
+        df,
+        NORMALIZED_ODDS_SCHEMA.required_columns,
+        "odds",
+        errors,
+    )
+    _validate_required_values(
+        df,
+        ("season", "sportsbook", "market_type", "team", "pulled_at", "source"),
+        "odds",
+        errors,
+    )
+    _validate_positive_integer_column(df, "season", "odds", errors)
+    _validate_positive_integer_column(df, "week", "odds", errors)
+    _validate_team_alias_columns(df, ["team", "opponent", "home_team", "away_team"], "odds", errors)
+    _validate_moneyline_column(df, "moneyline", "odds", errors)
+    _validate_moneyline_column(df, "spread_price", "odds", errors)
+    _validate_moneyline_column(df, "total_price", "odds", errors)
+    _validate_probability_columns_if_present(df, "odds", errors)
+    _validate_normalized_market_types(df, errors)
+    _validate_normalized_game_rows(df, errors)
+    _validate_duplicates(
+        df,
+        ["season", "week", "game_id", "sportsbook", "market_type", "team"],
+        "odds",
+        errors,
     )
     return errors
 
@@ -282,6 +376,83 @@ def validate_odds_schedule_relationship(
             f"their game_id on rows {_format_row_numbers(mismatch_rows)}."
         )
     return errors
+
+
+def _validate_normalized_market_types(
+    df: pd.DataFrame,
+    errors: list[str],
+) -> None:
+    if "market_type" not in df.columns:
+        return
+
+    allowed = NORMALIZED_GAME_MARKETS | NORMALIZED_FUTURES_MARKETS
+    invalid_rows = []
+    for index, value in df["market_type"].items():
+        if _is_blank(value):
+            continue
+        if str(value).strip().lower() not in allowed:
+            invalid_rows.append(int(index) + 2)
+
+    if invalid_rows:
+        errors.append(
+            "odds column 'market_type' has unsupported values on rows "
+            f"{_format_row_numbers(invalid_rows)}. Supported values: "
+            f"{', '.join(sorted(allowed))}."
+        )
+
+
+def _validate_normalized_game_rows(
+    df: pd.DataFrame,
+    errors: list[str],
+) -> None:
+    required = {"market_type", "week", "game_id", "team", "opponent", "home_team", "away_team"}
+    if not required.issubset(df.columns):
+        return
+
+    game_market = df["market_type"].astype("string").str.strip().str.lower().isin(
+        NORMALIZED_GAME_MARKETS,
+    )
+    game_rows = df[game_market]
+    if game_rows.empty:
+        return
+
+    _validate_required_values(
+        game_rows,
+        ("week", "game_id", "team", "opponent", "home_team", "away_team"),
+        "odds",
+        errors,
+    )
+    _validate_game_id_rows(game_rows, "odds", errors)
+    _validate_different_teams(game_rows, "team", "opponent", "odds", errors)
+    _validate_normalized_team_pairs(game_rows, errors)
+
+
+def _validate_normalized_team_pairs(
+    df: pd.DataFrame,
+    errors: list[str],
+) -> None:
+    invalid_rows: list[int] = []
+    for index, row in df.iterrows():
+        if any(
+            _is_blank(row.get(column))
+            for column in ("team", "opponent", "home_team", "away_team")
+        ):
+            continue
+        try:
+            team = normalize_team_name(row["team"])
+            opponent = normalize_team_name(row["opponent"])
+            home = normalize_team_name(row["home_team"])
+            away = normalize_team_name(row["away_team"])
+        except ValueError:
+            continue
+        if {team, opponent} != {home, away}:
+            invalid_rows.append(int(index) + 2)
+
+    if invalid_rows:
+        errors.append(
+            "odds team/opponent must match home_team/away_team on rows "
+            f"{_format_row_numbers(invalid_rows)}."
+        )
 
 
 def validate_public_picks_schedule_relationship(

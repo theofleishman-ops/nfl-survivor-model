@@ -61,6 +61,11 @@ def add_no_vig_probabilities(df: pd.DataFrame) -> pd.DataFrame:
         ``implied_probability``, and ``no_vig_win_probability`` columns.
     """
     odds_df = df.copy()
+    if {"team", "opponent", "no_vig_win_probability"}.issubset(odds_df.columns):
+        if "market_type" in odds_df.columns:
+            odds_df = odds_df[odds_df["market_type"].astype(str).str.lower() == "h2h"]
+        return odds_df.sort_values(["week", "game_id", "team"]).reset_index(drop=True)
+
     _require_columns(odds_df, REQUIRED_ODDS_COLUMNS)
 
     odds_df["week"] = pd.to_numeric(odds_df["week"], errors="raise").astype(int)
