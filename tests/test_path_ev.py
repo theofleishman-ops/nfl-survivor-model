@@ -7,6 +7,7 @@ import pandas.testing as pdt
 import pytest
 
 from survivor.path_ev import (
+    build_forward_game_probabilities,
     evaluate_path_ev,
     generate_candidate_paths,
     optimize_single_entry_path,
@@ -325,6 +326,120 @@ def test_available_odds_horizon_ignores_future_fallback_weeks_for_toy_optimizer(
     assert result.diagnostics["weeks_using_fallback_probabilities"] == []
 
 
+def test_forward_probabilities_tag_real_projected_and_fallback_sources():
+    schedule = pd.DataFrame(
+        [
+            {"week": 1, "game_id": "W1_A_B", "home_team": "A", "away_team": "B"},
+            {"week": 2, "game_id": "W2_C_D", "home_team": "C", "away_team": "D"},
+            {"week": 3, "game_id": "W3_E_F", "home_team": "E", "away_team": "F"},
+            {"week": 4, "game_id": "W4_G_H", "home_team": "G", "away_team": "H"},
+        ],
+    )
+    odds = pd.DataFrame(
+        [
+            _odds_row(1, "W1_A_B", "A", "B", 0.70),
+            _odds_row(1, "W1_A_B", "B", "A", 0.30),
+            {"week": 2, "game_id": "W2_C_D", "team": "C", "opponent": "D", "spread": -4.0},
+            {"week": 2, "game_id": "W2_C_D", "team": "D", "opponent": "C", "spread": 4.0},
+            {"team": "E", "team_strength_score": 0.70},
+            {"team": "F", "team_strength_score": 0.45},
+        ],
+    )
+
+    probabilities = build_forward_game_probabilities(schedule, odds)
+
+    assert len(probabilities) == 8
+    assert _source_for(probabilities, 1, "A") == "real_moneyline"
+    assert _source_for(probabilities, 2, "C") == "real_spread"
+    assert _source_for(probabilities, 3, "E") == "projected_team_strength"
+    assert _source_for(probabilities, 4, "G") == "fallback_default"
+    game_totals = probabilities.groupby(["week", "game_id"])["win_probability"].sum()
+    assert game_totals.tolist() == pytest.approx([1.0, 1.0, 1.0, 1.0])
+
+
+def test_full_season_horizon_uses_projected_team_strength_without_breaking_available_mode():
+    schedule = pd.DataFrame(
+        [
+            {"week": 1, "game_id": "W1_A_B", "home_team": "A", "away_team": "B"},
+            {"week": 2, "game_id": "W2_C_D", "home_team": "C", "away_team": "D"},
+        ],
+    )
+    odds = pd.DataFrame(
+        [
+            _odds_row(1, "W1_A_B", "A", "B", 0.75),
+            _odds_row(1, "W1_A_B", "B", "A", 0.25),
+            {"team": "C", "team_strength_score": 0.80},
+            {"team": "D", "team_strength_score": 0.35},
+        ],
+    )
+    public_picks = pd.DataFrame(
+        [
+            {"week": 1, "team": "A", "public_pick_pct": 0.80},
+            {"week": 1, "team": "B", "public_pick_pct": 0.20},
+        ],
+    )
+
+    available = optimize_single_entry_path(
+        schedule,
+        odds,
+        public_picks,
+        start_week=1,
+        pool_size=100,
+        simulations=200,
+        random_seed=9,
+        top_k=2,
+        beam_width=4,
+        path_ev_horizon="available",
+    )
+    full_season = optimize_single_entry_path(
+        schedule,
+        odds,
+        public_picks,
+        start_week=1,
+        pool_size=100,
+        simulations=200,
+        random_seed=9,
+        top_k=2,
+        beam_width=4,
+        path_ev_horizon="full-season",
+    )
+
+    assert available.best_path["week"].tolist() == [1]
+    assert available.diagnostics["weeks_with_projected_odds"] == []
+    assert full_season.best_path["week"].tolist() == [1, 2]
+    assert full_season.diagnostics["weeks_with_real_odds"] == [1]
+    assert full_season.diagnostics["weeks_with_projected_odds"] == [2]
+    assert full_season.diagnostics["weeks_using_fallback_probabilities"] == []
+    assert "cumulative_path_ev" in full_season.expected_field_size_by_week.columns
+    assert "weekly_ev_delta" in full_season.expected_field_size_by_week.columns
+
+
+def test_projected_ownership_uses_team_popularity_placeholder_and_scarcity():
+    schedule = pd.DataFrame(
+        [
+            {"week": 1, "game_id": "W1_DAL_JAX", "home_team": "DAL", "away_team": "JAX"},
+            {"week": 1, "game_id": "W1_SEA_TEN", "home_team": "SEA", "away_team": "TEN"},
+        ],
+    )
+    odds = pd.DataFrame(
+        [
+            {"team": "DAL", "team_strength_score": 0.50},
+            {"team": "JAX", "team_strength_score": 0.50},
+            {"team": "SEA", "team_strength_score": 0.50},
+            {"team": "TEN", "team_strength_score": 0.50},
+        ],
+    )
+
+    probabilities = build_forward_game_probabilities(schedule, odds)
+
+    dal = probabilities[probabilities["team"] == "DAL"].iloc[0]
+    sea = probabilities[probabilities["team"] == "SEA"].iloc[0]
+    assert dal["win_probability"] == pytest.approx(sea["win_probability"])
+    assert dal["projected_public_pick_pct"] > sea["projected_public_pick_pct"]
+    assert set(probabilities["public_pick_source"]) == {"projected_ownership"}
+    assert probabilities["week_alternative_scarcity"].between(0, 1).all()
+
+
 def test_repeated_seed_is_deterministic():
     schedule = _multiweek_schedule()
     odds = _multiweek_odds()
@@ -390,6 +505,9 @@ def test_report_generation(tmp_path):
     assert "EV multiple vs entry fee" in report
     assert "EV multiple vs baseline fair value" in report
     assert "Horizon Comparison" in report
+    assert "Weeks with projected odds" in report
+    assert "Cumulative path EV" in report
+    assert "Path EV Creation By Week" in report
     assert "Heuristic Ranking Comparison" in report
     assert "Assumptions" in report_path.read_text(encoding="utf-8")
 
@@ -529,3 +647,11 @@ def _odds_row(
         "opponent": opponent,
         "no_vig_win_probability": probability,
     }
+
+
+def _source_for(probabilities: pd.DataFrame, week: int, team: str) -> str:
+    row = probabilities[
+        (probabilities["week"].astype(int) == int(week))
+        & (probabilities["team"].astype(str) == team)
+    ].iloc[0]
+    return str(row["probability_source"])

@@ -26,7 +26,43 @@ DEFAULT_SIMULATIONS = 10000
 DEFAULT_HOME_WIN_PROBABILITY = 0.52
 DEFAULT_PATH_EV_HORIZON = "available"
 PATH_EV_HORIZONS = ("week", "current", "available", "full-season")
-REAL_PROBABILITY_SOURCES = frozenset({"no_vig_moneyline", "spread"})
+PROBABILITY_SOURCE_REAL_MONEYLINE = "real_moneyline"
+PROBABILITY_SOURCE_REAL_SPREAD = "real_spread"
+PROBABILITY_SOURCE_PROJECTED_TEAM_STRENGTH = "projected_team_strength"
+PROBABILITY_SOURCE_FALLBACK_DEFAULT = "fallback_default"
+REAL_PROBABILITY_SOURCES = frozenset(
+    {
+        PROBABILITY_SOURCE_REAL_MONEYLINE,
+        PROBABILITY_SOURCE_REAL_SPREAD,
+    },
+)
+PROJECTED_PROBABILITY_SOURCES = frozenset(
+    {PROBABILITY_SOURCE_PROJECTED_TEAM_STRENGTH},
+)
+FALLBACK_PROBABILITY_SOURCES = frozenset({PROBABILITY_SOURCE_FALLBACK_DEFAULT})
+PROJECTED_PUBLIC_PICK_SOURCE = "projected_ownership"
+
+TEAM_POPULARITY_PLACEHOLDER = {
+    "DAL": 1.35,
+    "KC": 1.25,
+    "GB": 1.18,
+    "PIT": 1.18,
+    "SF": 1.18,
+    "PHI": 1.16,
+    "BUF": 1.14,
+    "CHI": 1.10,
+    "LV": 1.10,
+    "NYG": 1.10,
+    "NYJ": 1.10,
+    "LAR": 1.08,
+    "MIA": 1.08,
+    "NE": 1.08,
+    "DET": 1.06,
+    "BAL": 1.05,
+    "CIN": 1.05,
+    "MIN": 1.05,
+    "SEA": 1.05,
+}
 
 PATH_COLUMNS = [
     "path_id",
@@ -53,8 +89,8 @@ ASSUMPTIONS = (
     "The selected entry is removed from public ownership counts for its fixed pick in each week.",
     "Winner-take-all or equal split among final survivors is assumed.",
     "Current public pick percentages are used when present.",
-    "Future ownership is projected from win probability when public pick data is missing.",
-    "Future win probabilities use no-vig moneyline first, then spread, then team-strength priors, then a conservative home-field default.",
+    "Future ownership is projected from win probability, placeholder team popularity, and weekly alternative scarcity when public pick data is missing.",
+    "Future win probabilities use no-vig moneyline first, then spread, then team-strength priors with opponent strength and home field, then a conservative default.",
     "The public field is modeled in aggregate by week and does not track every public entry's used-team history.",
 )
 
@@ -146,6 +182,25 @@ class _CommonSimulation:
     weeks: list[int]
     team_wins: dict[tuple[int, str], np.ndarray]
     public_distributions: dict[int, pd.DataFrame]
+
+
+def build_forward_game_probabilities(
+    schedule_df: pd.DataFrame,
+    odds_df: pd.DataFrame,
+    public_picks_df: pd.DataFrame | None = None,
+) -> pd.DataFrame:
+    """Build team-level win and ownership projections for every scheduled game.
+
+    Probability sources are tagged as:
+    ``real_moneyline``, ``real_spread``, ``projected_team_strength``, or
+    ``fallback_default``.
+    """
+    schedule = _prepare_schedule(schedule_df)
+    team_probabilities = _prepare_team_probabilities(schedule, _as_dataframe(odds_df))
+    return _add_projected_public_picks(
+        team_probabilities,
+        _normalize_public_picks(_as_dataframe(public_picks_df)),
+    )
 
 
 def generate_candidate_paths(
@@ -609,8 +664,11 @@ def _build_path_diagnostics(
     path_df = path.sort_values("week").reset_index(drop=True).copy()
     weeks = [int(week) for week in path_df["week"].astype(int).tolist()]
     sources = path_df.get("probability_source", pd.Series(dtype=object)).astype(str).str.lower()
-    fallback_mask = ~sources.isin(REAL_PROBABILITY_SOURCES)
+    real_mask = sources.isin(REAL_PROBABILITY_SOURCES)
+    projected_mask = sources.isin(PROJECTED_PROBABILITY_SOURCES)
+    fallback_mask = sources.isin(FALLBACK_PROBABILITY_SOURCES)
     fallback_rows = path_df[fallback_mask].copy()
+    projected_rows = path_df[projected_mask].copy()
     ownership_methods = _value_counts_dict(path_df, "public_pick_source")
     baseline_fair_value = (
         float(prize_pool) / float(pool_size)
@@ -621,18 +679,27 @@ def _build_path_diagnostics(
         "horizon": horizon,
         "number_of_weeks_evaluated": len(weeks),
         "weeks_evaluated": weeks,
-        "weeks_with_real_odds": [
-            int(row["week"])
-            for row in path_df.loc[~fallback_mask, ["week"]].to_dict("records")
-        ],
+        "weeks_with_real_odds": sorted(
+            path_df.loc[real_mask, "week"].astype(int).unique().tolist(),
+        ),
+        "weeks_with_projected_odds": sorted(
+            path_df.loc[projected_mask, "week"].astype(int).unique().tolist(),
+        ),
         "weeks_using_fallback_probabilities": sorted(
             fallback_rows["week"].astype(int).unique().tolist(),
+        ),
+        "average_projected_win_probability": (
+            float(projected_rows["win_probability"].astype(float).mean())
+            if not projected_rows.empty
+            else None
         ),
         "average_fallback_win_probability": (
             float(fallback_rows["win_probability"].astype(float).mean())
             if not fallback_rows.empty
             else None
         ),
+        "probability_sources": _value_counts_dict(path_df, "probability_source"),
+        "projected_probability_sources": _value_counts_dict(projected_rows, "probability_source"),
         "fallback_probability_sources": _value_counts_dict(fallback_rows, "probability_source"),
         "ownership_projection_methods": ownership_methods,
         "available_odds_weeks": _available_odds_weeks(model, start_week),
@@ -854,26 +921,26 @@ def _prepare_team_probabilities(schedule: pd.DataFrame, odds_df: pd.DataFrame) -
         h2h_probability = _float_or_none(row.get("h2h_probability"))
         if h2h_probability is not None:
             win_probabilities.append(h2h_probability)
-            sources.append("no_vig_moneyline")
+            sources.append(PROBABILITY_SOURCE_REAL_MONEYLINE)
             continue
 
         spread_probability = _float_or_none(row.get("spread_probability"))
         if spread_probability is not None:
             win_probabilities.append(spread_probability)
-            sources.append("spread")
+            sources.append(PROBABILITY_SOURCE_REAL_SPREAD)
             continue
 
         team_strength = _float_or_none(row.get("team_strength_score"))
         opponent_strength = _float_or_none(row.get("opponent_team_strength_score"))
         if team_strength is not None and opponent_strength is not None:
             win_probabilities.append(estimate_game_win_probability(row))
-            sources.append("team_strength")
+            sources.append(PROBABILITY_SOURCE_PROJECTED_TEAM_STRENGTH)
             continue
 
         win_probabilities.append(
             DEFAULT_HOME_WIN_PROBABILITY if bool(row.get("is_home")) else 1 - DEFAULT_HOME_WIN_PROBABILITY,
         )
-        sources.append("home_field_default")
+        sources.append(PROBABILITY_SOURCE_FALLBACK_DEFAULT)
 
     probabilities["win_probability"] = [_clip_probability(value) for value in win_probabilities]
     probabilities["probability_source"] = sources
@@ -893,6 +960,8 @@ def _prepare_team_probabilities(schedule: pd.DataFrame, odds_df: pd.DataFrame) -
             "win_probability",
             "no_vig_win_probability",
             "probability_source",
+            "team_strength_score",
+            "opponent_team_strength_score",
         ]
     ].sort_values(["week", "game_id", "team"]).reset_index(drop=True)
 
@@ -1036,12 +1105,23 @@ def _add_projected_public_picks(
 ) -> pd.DataFrame:
     output = team_probabilities.copy()
     output["projected_public_pick_pct"] = 0.0
-    output["public_pick_source"] = "projected_win_probability"
+    output["public_pick_source"] = PROJECTED_PUBLIC_PICK_SOURCE
+    output["team_popularity_weight"] = (
+        output["team"]
+        .astype(str)
+        .map(TEAM_POPULARITY_PLACEHOLDER)
+        .fillna(1.0)
+        .astype(float)
+    )
+    output["week_alternative_scarcity"] = 0.0
+    output["ownership_projection_weight"] = 0.0
 
     public_picks = _normalize_public_picks(public_picks_df)
     for week, week_df in output.groupby("week", sort=True):
         week_mask = output["week"].astype(int) == int(week)
         week_public = public_picks[public_picks["week"].astype(int) == int(week)].copy()
+        scarcity = _week_alternative_scarcity(week_df["win_probability"])
+        output.loc[week_mask, "week_alternative_scarcity"] = scarcity
         if not week_public.empty and float(week_public["public_pick_pct"].sum()) > 0:
             picks_by_team = dict(
                 zip(
@@ -1055,14 +1135,49 @@ def _add_projected_public_picks(
                 "team",
             ].astype(str).map(picks_by_team).fillna(0.0)
             output.loc[week_mask, "public_pick_source"] = "public_picks"
+            output.loc[week_mask, "ownership_projection_weight"] = output.loc[
+                week_mask,
+                "projected_public_pick_pct",
+            ].astype(float)
             continue
 
-        weights = week_df["win_probability"].astype(float).clip(lower=0.01)
+        probabilities = week_df["win_probability"].astype(float).clip(
+            lower=0.01,
+            upper=0.99,
+        )
+        popularity = (
+            week_df["team"]
+            .astype(str)
+            .map(TEAM_POPULARITY_PLACEHOLDER)
+            .fillna(1.0)
+            .astype(float)
+        )
+        exponent = 2.0 + 2.0 * scarcity
+        favorite_boost = np.where(probabilities >= 0.70, 1.0 + 0.50 * scarcity, 1.0)
+        weights = (probabilities**exponent) * popularity * favorite_boost
         total_weight = float(weights.sum())
         projected = weights / total_weight if total_weight > 0 else np.full(len(week_df), 1 / len(week_df))
         output.loc[week_df.index, "projected_public_pick_pct"] = projected
+        output.loc[week_df.index, "ownership_projection_weight"] = weights
 
     return output
+
+
+def _week_alternative_scarcity(win_probabilities: pd.Series) -> float:
+    probabilities = pd.to_numeric(win_probabilities, errors="coerce").dropna().astype(float)
+    if probabilities.empty:
+        return 0.0
+    count_60 = int((probabilities >= 0.60).sum())
+    count_65 = int((probabilities >= 0.65).sum())
+    count_70 = int((probabilities >= 0.70).sum())
+    count_75 = int((probabilities >= 0.75).sum())
+    scarcity_score = (
+        1.00 / (1 + count_60)
+        + 1.25 / (1 + count_65)
+        + 1.50 / (1 + count_70)
+        + 1.75 / (1 + count_75)
+    )
+    return float(max(0.0, min(1.0, scarcity_score / 5.50)))
 
 
 def _rankings_by_week(
@@ -1289,6 +1404,7 @@ def _evaluate_prepared_paths(
             max(float(pool_size) - 1.0, 0.0),
             dtype=float,
         )
+        previous_cumulative_path_ev = 1.0 / max(float(pool_size), 1.0)
         for row in ordered.to_dict("records"):
             week = int(row["week"])
             team = str(row["team"])
@@ -1304,6 +1420,9 @@ def _evaluate_prepared_paths(
             )
             expected_public_entries = float(public_entries_if_alive.mean())
             expected_total_entries = expected_public_entries + 1.0
+            equity_if_alive = 1.0 / np.maximum(public_entries_if_alive + 1.0, 1.0)
+            expected_equity_if_alive = float(equity_if_alive.mean())
+            cumulative_path_ev = float(path_survival_probability * expected_equity_if_alive)
             survival_rows.append(
                 {
                     "path_id": int(path_id),
@@ -1317,8 +1436,12 @@ def _evaluate_prepared_paths(
                     "week": week,
                     "expected_public_entries": expected_public_entries,
                     "expected_total_entries": expected_total_entries,
+                    "expected_equity_if_alive": expected_equity_if_alive,
+                    "cumulative_path_ev": cumulative_path_ev,
+                    "weekly_ev_delta": cumulative_path_ev - previous_cumulative_path_ev,
                 },
             )
+            previous_cumulative_path_ev = cumulative_path_ev
 
         final_public_entries = public_entries_if_alive
         total_survivors_if_alive = final_public_entries + 1.0

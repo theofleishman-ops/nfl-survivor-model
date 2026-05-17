@@ -593,9 +593,15 @@ Assumptions and limitations:
 
 - Current public pick percentages are used when available.
 - Future ownership uses public-pick rows when present; otherwise it is
-  projected proportional to win probability.
-- Win probabilities use no-vig moneyline first, then spread, then team-strength
-  priors when present, then a conservative home-field default.
+  projected from win probability, placeholder team popularity, and the scarcity
+  of good alternatives in that week.
+- Win probabilities are tagged as `real_moneyline`, `real_spread`,
+  `projected_team_strength`, or `fallback_default`. The model uses no-vig
+  moneyline first, then spread, then futures/win-total or explicit team-strength
+  priors with opponent strength and home field, then a conservative default.
+- `--path-ev-horizon available` still evaluates only consecutive weeks with
+  real odds. Use `--path-ev-horizon full-season` to optimize against projected
+  probabilities for every remaining scheduled week.
 - Final equity assumes winner-take-all or equal split among survivors.
 - The public field is modeled in aggregate by week and does not track every
   public entry's used-team history.

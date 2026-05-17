@@ -146,6 +146,16 @@ def main() -> None:
         f"{_format_edge_or_not_provided(result.expected_edge_vs_baseline)}"
     )
     print(f"Path survival probability: {_format_rate_pct(result.path_survival_probability)}")
+    diagnostics = result.diagnostics or {}
+    print(f"Weeks with real odds: {_format_week_list(diagnostics.get('weeks_with_real_odds'))}")
+    print(
+        "Weeks with projected odds: "
+        f"{_format_week_list(diagnostics.get('weeks_with_projected_odds'))}"
+    )
+    print(
+        "Weeks using fallback probabilities: "
+        f"{_format_week_list(diagnostics.get('weeks_using_fallback_probabilities'))}"
+    )
     print(
         "Expected final survivors if alive: "
         f"{result.expected_survivors_if_alive:.2f}"
@@ -259,6 +269,12 @@ def _format_edge_or_not_provided(value: float | None) -> str:
     if value is None or pd.isna(value):
         return "not provided"
     return f"{float(value):+.1%}"
+
+
+def _format_week_list(value: object) -> str:
+    if not isinstance(value, (list, tuple, set)) or not value:
+        return "none"
+    return ", ".join(f"W{int(week)}" for week in sorted(value))
 
 
 if __name__ == "__main__":
