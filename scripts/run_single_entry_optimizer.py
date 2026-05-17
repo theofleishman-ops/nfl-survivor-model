@@ -14,8 +14,13 @@ SRC_DIR = PROJECT_ROOT / "src"
 if str(SRC_DIR) not in sys.path:
     sys.path.insert(0, str(SRC_DIR))
 
-from survivor.loaders import load_sample_data, load_season_data  # noqa: E402
-from survivor.path_ev import PATH_EV_HORIZONS, optimize_single_entry_path  # noqa: E402
+from survivor.loaders import load_sample_data, load_season_data, load_team_strength_df  # noqa: E402
+from survivor.path_ev import (  # noqa: E402
+    DEFAULT_FORWARD_TEAM_STRENGTH_SCALE,
+    DEFAULT_TEAM_STRENGTH_HOME_FIELD_ADJUSTMENT,
+    PATH_EV_HORIZONS,
+    optimize_single_entry_path,
+)
 from survivor.path_ev_reports import write_single_entry_path_ev_report  # noqa: E402
 
 
@@ -60,6 +65,24 @@ def main() -> None:
         choices=PATH_EV_HORIZONS,
         default="available",
         help="Evaluation horizon. Defaults to consecutive weeks with real odds available.",
+    )
+    parser.add_argument(
+        "--team-strength",
+        type=Path,
+        default=None,
+        help="Optional team_strength.csv with season, team, rating, source, notes.",
+    )
+    parser.add_argument(
+        "--team-strength-home-field",
+        type=float,
+        default=DEFAULT_TEAM_STRENGTH_HOME_FIELD_ADJUSTMENT,
+        help="Home-field adjustment added to the team-strength rating differential.",
+    )
+    parser.add_argument(
+        "--team-strength-scale",
+        type=float,
+        default=DEFAULT_FORWARD_TEAM_STRENGTH_SCALE,
+        help="Positive logistic scale for team-strength rating differentials.",
     )
     parser.add_argument(
         "--pool-size",
@@ -114,6 +137,9 @@ def main() -> None:
         entry_fee=args.entry_fee,
         prize_pool=args.prize_pool,
         path_ev_horizon=args.path_ev_horizon,
+        team_strength_df=data.get("team_strength_df"),
+        team_strength_home_field_adjustment=args.team_strength_home_field,
+        team_strength_scale=args.team_strength_scale,
     )
     report_path = write_single_entry_path_ev_report(
         result,
@@ -129,7 +155,12 @@ def main() -> None:
         "Best current-week pick: "
         f"{current_pick['team']} over {current_pick['opponent']}"
     )
-    print(f"Path EV: {_format_equity_pct(result.best_path_ev)}")
+    diagnostics = result.diagnostics or {}
+    reliability = diagnostics.get("full_season_ev_reliability", "not_applicable")
+    if reliability == "UNRELIABLE":
+        print(f"Path EV: {_format_equity_pct(result.best_path_ev)} (UNRELIABLE; diagnostic only)")
+    else:
+        print(f"Path EV: {_format_equity_pct(result.best_path_ev)}")
     print(f"Baseline fair value: {_format_money_or_not_provided(result.baseline_value)}")
     if result.ev_dollars is not None:
         print(f"EV dollars: ${result.ev_dollars:,.2f}")
@@ -146,15 +177,26 @@ def main() -> None:
         f"{_format_edge_or_not_provided(result.expected_edge_vs_baseline)}"
     )
     print(f"Path survival probability: {_format_rate_pct(result.path_survival_probability)}")
-    diagnostics = result.diagnostics or {}
     print(f"Weeks with real odds: {_format_week_list(diagnostics.get('weeks_with_real_odds'))}")
     print(
         "Weeks with projected odds: "
         f"{_format_week_list(diagnostics.get('weeks_with_projected_odds'))}"
     )
     print(
+        "Weeks with projected team-strength probabilities: "
+        f"{_format_week_list(diagnostics.get('weeks_with_projected_team_strength_probabilities'))}"
+    )
+    print(
         "Weeks using fallback probabilities: "
         f"{_format_week_list(diagnostics.get('weeks_using_fallback_probabilities'))}"
+    )
+    print(
+        "Fallback coverage: "
+        f"{_format_optional_pct(diagnostics.get('fallback_coverage_pct'))}"
+    )
+    print(
+        "Full-season EV reliability: "
+        f"{diagnostics.get('full_season_ev_reliability', 'not_applicable')}"
     )
     print(
         "Expected final survivors if alive: "
@@ -185,10 +227,24 @@ def _load_cli_data(args: argparse.Namespace) -> dict[str, pd.DataFrame | None]:
             "odds_df": sample_data["odds"],
             "public_picks_df": sample_data["public_picks"],
             "entries_df": sample_data["entries"],
+            "team_strength_df": _load_cli_team_strength(args),
         }
 
     data_dir = args.data_dir or PROJECT_ROOT / "data" / "raw"
-    return load_season_data(season=args.season, data_dir=data_dir)
+    data = load_season_data(season=args.season, data_dir=data_dir)
+    explicit_strength = _load_cli_team_strength(args)
+    if explicit_strength is not None:
+        data["team_strength_df"] = explicit_strength
+    return data
+
+
+def _load_cli_team_strength(args: argparse.Namespace) -> pd.DataFrame | None:
+    if args.team_strength is None:
+        return None
+    strength = load_team_strength_df(args.team_strength)
+    if args.season is not None and "season" in strength.columns:
+        strength = strength[strength["season"].astype(int) == int(args.season)].copy()
+    return strength
 
 
 def _parse_used_teams(value: str | None) -> list[str]:
@@ -269,6 +325,12 @@ def _format_edge_or_not_provided(value: float | None) -> str:
     if value is None or pd.isna(value):
         return "not provided"
     return f"{float(value):+.1%}"
+
+
+def _format_optional_pct(value: object) -> str:
+    if value is None or pd.isna(value):
+        return "not applicable"
+    return f"{float(value):.1%}"
 
 
 def _format_week_list(value: object) -> str:

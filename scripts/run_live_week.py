@@ -25,6 +25,10 @@ from survivor.live_week import (  # noqa: E402
 )
 from survivor.odds_providers.the_odds_api import TheOddsAPIProvider  # noqa: E402
 from survivor.path_ev import PATH_EV_HORIZONS  # noqa: E402
+from survivor.path_ev import (  # noqa: E402
+    DEFAULT_FORWARD_TEAM_STRENGTH_SCALE,
+    DEFAULT_TEAM_STRENGTH_HOME_FIELD_ADJUSTMENT,
+)
 
 
 def main(
@@ -184,6 +188,24 @@ def _build_parser() -> argparse.ArgumentParser:
         ),
     )
     parser.add_argument(
+        "--team-strength",
+        type=Path,
+        default=None,
+        help="Optional team_strength.csv for full-season path EV projections.",
+    )
+    parser.add_argument(
+        "--team-strength-home-field",
+        type=float,
+        default=DEFAULT_TEAM_STRENGTH_HOME_FIELD_ADJUSTMENT,
+        help="Home-field adjustment added to team-strength rating differentials.",
+    )
+    parser.add_argument(
+        "--team-strength-scale",
+        type=float,
+        default=DEFAULT_FORWARD_TEAM_STRENGTH_SCALE,
+        help="Positive logistic scale for team-strength rating differentials.",
+    )
+    parser.add_argument(
         "--entry-fee",
         type=float,
         default=None,
@@ -228,6 +250,9 @@ def _options_from_args(args: argparse.Namespace) -> LiveWeekOptions:
         beam_width=args.beam_width,
         top_k=args.top_k,
         path_ev_horizon=args.path_ev_horizon,
+        team_strength_path=args.team_strength,
+        team_strength_home_field_adjustment=args.team_strength_home_field,
+        team_strength_scale=args.team_strength_scale,
         entry_fee=args.entry_fee,
         prize_pool=args.prize_pool,
         dry_run=args.dry_run,

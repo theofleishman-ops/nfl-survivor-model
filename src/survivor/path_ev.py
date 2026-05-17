@@ -16,7 +16,11 @@ import pandas as pd
 from survivor.odds import add_no_vig_probabilities
 from survivor.optimizer import rank_weekly_picks
 from survivor.team_strength import build_team_strength_priors
-from survivor.win_probability import estimate_game_win_probability
+from survivor.win_probability import (
+    DEFAULT_TEAM_STRENGTH_SCALE,
+    estimate_game_win_probability,
+    estimate_team_strength_win_probability,
+)
 
 
 DEFAULT_POOL_SIZE = 5000
@@ -25,6 +29,9 @@ DEFAULT_BEAM_WIDTH = 100
 DEFAULT_SIMULATIONS = 10000
 DEFAULT_HOME_WIN_PROBABILITY = 0.52
 DEFAULT_PATH_EV_HORIZON = "available"
+DEFAULT_TEAM_STRENGTH_HOME_FIELD_ADJUSTMENT = 0.0
+DEFAULT_FORWARD_TEAM_STRENGTH_SCALE = DEFAULT_TEAM_STRENGTH_SCALE
+UNRELIABLE_FALLBACK_COVERAGE_THRESHOLD = 0.25
 PATH_EV_HORIZONS = ("week", "current", "available", "full-season")
 PROBABILITY_SOURCE_REAL_MONEYLINE = "real_moneyline"
 PROBABILITY_SOURCE_REAL_SPREAD = "real_spread"
@@ -90,7 +97,7 @@ ASSUMPTIONS = (
     "Winner-take-all or equal split among final survivors is assumed.",
     "Current public pick percentages are used when present.",
     "Future ownership is projected from win probability, placeholder team popularity, and weekly alternative scarcity when public pick data is missing.",
-    "Future win probabilities use no-vig moneyline first, then spread, then team-strength priors with opponent strength and home field, then a conservative default.",
+    "Future win probabilities use no-vig moneyline first, then spread, then team-strength ratings with opponent strength and configurable home field, then a conservative default.",
     "The public field is modeled in aggregate by week and does not track every public entry's used-team history.",
 )
 
@@ -188,6 +195,9 @@ def build_forward_game_probabilities(
     schedule_df: pd.DataFrame,
     odds_df: pd.DataFrame,
     public_picks_df: pd.DataFrame | None = None,
+    team_strength_df: pd.DataFrame | None = None,
+    team_strength_home_field_adjustment: float = DEFAULT_TEAM_STRENGTH_HOME_FIELD_ADJUSTMENT,
+    team_strength_scale: float = DEFAULT_FORWARD_TEAM_STRENGTH_SCALE,
 ) -> pd.DataFrame:
     """Build team-level win and ownership projections for every scheduled game.
 
@@ -196,7 +206,13 @@ def build_forward_game_probabilities(
     ``fallback_default``.
     """
     schedule = _prepare_schedule(schedule_df)
-    team_probabilities = _prepare_team_probabilities(schedule, _as_dataframe(odds_df))
+    team_probabilities = _prepare_team_probabilities(
+        schedule,
+        _as_dataframe(odds_df),
+        _as_dataframe(team_strength_df),
+        team_strength_home_field_adjustment=team_strength_home_field_adjustment,
+        team_strength_scale=team_strength_scale,
+    )
     return _add_projected_public_picks(
         team_probabilities,
         _normalize_public_picks(_as_dataframe(public_picks_df)),
@@ -214,6 +230,9 @@ def generate_candidate_paths(
     top_k: int = DEFAULT_TOP_K,
     beam_width: int = DEFAULT_BEAM_WIDTH,
     path_ev_horizon: str = DEFAULT_PATH_EV_HORIZON,
+    team_strength_df: pd.DataFrame | None = None,
+    team_strength_home_field_adjustment: float = DEFAULT_TEAM_STRENGTH_HOME_FIELD_ADJUSTMENT,
+    team_strength_scale: float = DEFAULT_FORWARD_TEAM_STRENGTH_SCALE,
 ) -> pd.DataFrame:
     """Generate fixed survivor paths with a controlled beam search.
 
@@ -233,6 +252,9 @@ def generate_candidate_paths(
         public_picks_df=public_picks_df,
         start_week=start_week,
         pool_size=pool_size,
+        team_strength_df=team_strength_df,
+        team_strength_home_field_adjustment=team_strength_home_field_adjustment,
+        team_strength_scale=team_strength_scale,
     )
     weeks = _resolve_horizon_weeks(model, start_week, path_ev_horizon)
     if not weeks:
@@ -318,6 +340,9 @@ def evaluate_path_ev(
     random_seed: int | None = None,
     entry_fee: float | None = None,
     prize_pool: float | None = None,
+    team_strength_df: pd.DataFrame | None = None,
+    team_strength_home_field_adjustment: float = DEFAULT_TEAM_STRENGTH_HOME_FIELD_ADJUSTMENT,
+    team_strength_scale: float = DEFAULT_FORWARD_TEAM_STRENGTH_SCALE,
 ) -> PathEVResult:
     """Evaluate a single fixed path using Monte Carlo contest equity."""
     _validate_positive_int("pool_size", pool_size)
@@ -340,6 +365,9 @@ def evaluate_path_ev(
         public_picks_df=public_picks_df,
         start_week=start_week,
         pool_size=pool_size,
+        team_strength_df=team_strength_df,
+        team_strength_home_field_adjustment=team_strength_home_field_adjustment,
+        team_strength_scale=team_strength_scale,
     )
     prepared_path = _prepare_paths_for_evaluation(path, model.team_probabilities)
     weeks = sorted(prepared_path["week"].astype(int).unique().tolist())
@@ -430,6 +458,9 @@ def optimize_single_entry_path(
     entry_fee: float | None = None,
     prize_pool: float | None = None,
     path_ev_horizon: str = DEFAULT_PATH_EV_HORIZON,
+    team_strength_df: pd.DataFrame | None = None,
+    team_strength_home_field_adjustment: float = DEFAULT_TEAM_STRENGTH_HOME_FIELD_ADJUSTMENT,
+    team_strength_scale: float = DEFAULT_FORWARD_TEAM_STRENGTH_SCALE,
 ) -> SingleEntryPathOptimizationResult:
     """Find the single-entry path with the highest simulated contest equity."""
     _validate_positive_int("simulations", simulations)
@@ -446,6 +477,9 @@ def optimize_single_entry_path(
         top_k=top_k,
         beam_width=beam_width,
         path_ev_horizon=path_ev_horizon,
+        team_strength_df=team_strength_df,
+        team_strength_home_field_adjustment=team_strength_home_field_adjustment,
+        team_strength_scale=team_strength_scale,
     )
     if candidate_paths.empty:
         raise ValueError("No candidate paths were generated.")
@@ -456,6 +490,9 @@ def optimize_single_entry_path(
         public_picks_df=public_picks_df,
         start_week=start_week,
         pool_size=pool_size,
+        team_strength_df=team_strength_df,
+        team_strength_home_field_adjustment=team_strength_home_field_adjustment,
+        team_strength_scale=team_strength_scale,
     )
     prepared_paths = _prepare_paths_for_evaluation(candidate_paths, model.team_probabilities)
     weeks = sorted(prepared_paths["week"].astype(int).unique().tolist())
@@ -563,9 +600,18 @@ def _prepare_path_model_data(
     public_picks_df: pd.DataFrame,
     start_week: int,
     pool_size: int,
+    team_strength_df: pd.DataFrame | None = None,
+    team_strength_home_field_adjustment: float = DEFAULT_TEAM_STRENGTH_HOME_FIELD_ADJUSTMENT,
+    team_strength_scale: float = DEFAULT_FORWARD_TEAM_STRENGTH_SCALE,
 ) -> _PathModelData:
     schedule = _prepare_schedule(schedule_df)
-    team_probabilities = _prepare_team_probabilities(schedule, _as_dataframe(odds_df))
+    team_probabilities = _prepare_team_probabilities(
+        schedule,
+        _as_dataframe(odds_df),
+        _as_dataframe(team_strength_df),
+        team_strength_home_field_adjustment=team_strength_home_field_adjustment,
+        team_strength_scale=team_strength_scale,
+    )
     team_probabilities = _add_projected_public_picks(
         team_probabilities,
         _normalize_public_picks(_as_dataframe(public_picks_df)),
@@ -669,6 +715,8 @@ def _build_path_diagnostics(
     fallback_mask = sources.isin(FALLBACK_PROBABILITY_SOURCES)
     fallback_rows = path_df[fallback_mask].copy()
     projected_rows = path_df[projected_mask].copy()
+    fallback_coverage = _fallback_coverage(path_df)
+    reliability_label = _full_season_reliability_label(horizon, fallback_coverage)
     ownership_methods = _value_counts_dict(path_df, "public_pick_source")
     baseline_fair_value = (
         float(prize_pool) / float(pool_size)
@@ -685,8 +733,18 @@ def _build_path_diagnostics(
         "weeks_with_projected_odds": sorted(
             path_df.loc[projected_mask, "week"].astype(int).unique().tolist(),
         ),
+        "weeks_with_projected_team_strength_probabilities": sorted(
+            path_df.loc[projected_mask, "week"].astype(int).unique().tolist(),
+        ),
         "weeks_using_fallback_probabilities": sorted(
             fallback_rows["week"].astype(int).unique().tolist(),
+        ),
+        "fallback_probability_count": int(fallback_mask.sum()),
+        "fallback_coverage_pct": fallback_coverage,
+        "full_season_ev_reliability": reliability_label,
+        "full_season_ev_actionability": _full_season_actionability(
+            horizon,
+            fallback_coverage,
         ),
         "average_projected_win_probability": (
             float(projected_rows["win_probability"].astype(float).mean())
@@ -714,6 +772,29 @@ def _build_path_diagnostics(
         "pool_size": int(pool_size),
         "simulations": int(simulations),
     }
+
+
+def _fallback_coverage(path_df: pd.DataFrame) -> float:
+    if path_df.empty or "probability_source" not in path_df.columns:
+        return 0.0
+    sources = path_df["probability_source"].astype(str).str.lower()
+    return float(sources.isin(FALLBACK_PROBABILITY_SOURCES).mean())
+
+
+def _full_season_reliability_label(horizon: str, fallback_coverage: float) -> str:
+    if horizon != "full-season":
+        return "not_applicable"
+    if fallback_coverage > UNRELIABLE_FALLBACK_COVERAGE_THRESHOLD:
+        return "UNRELIABLE"
+    return "USABLE"
+
+
+def _full_season_actionability(horizon: str, fallback_coverage: float) -> str:
+    if horizon != "full-season":
+        return "not_applicable"
+    if fallback_coverage > UNRELIABLE_FALLBACK_COVERAGE_THRESHOLD:
+        return "not_actionable_high_fallback_coverage"
+    return "usable_with_projection_caveats"
 
 
 def _build_horizon_comparison(
@@ -768,7 +849,8 @@ def _build_horizon_comparison(
                 entry_fee=entry_fee,
                 prize_pool=prize_pool,
             )
-        rows.append(_horizon_row(label, horizon, weeks, summary))
+        coverage = _fallback_coverage(path[path["week"].astype(int).isin(set(weeks))])
+        rows.append(_horizon_row(label, horizon, weeks, summary, coverage))
     return rows
 
 
@@ -808,12 +890,21 @@ def _horizon_row(
     horizon: str,
     weeks: list[int],
     summary: dict[str, Any],
+    fallback_coverage: float,
 ) -> dict[str, Any]:
+    reliability = _full_season_reliability_label(horizon, fallback_coverage)
+    note = (
+        "not actionable because fallback coverage exceeds 25%"
+        if reliability == "UNRELIABLE"
+        else ""
+    )
     return {
         "label": label,
         "horizon": horizon,
-        "status": "evaluated",
+        "status": reliability if reliability == "UNRELIABLE" else "evaluated",
         "weeks_evaluated": len(weeks),
+        "fallback_coverage_pct": fallback_coverage,
+        "full_season_ev_reliability": reliability,
         "path_ev": _optional_float(summary.get("path_ev")),
         "ev_dollars": _optional_float(summary.get("ev_dollars")),
         "ev_multiple_vs_entry_fee": _optional_float(
@@ -831,7 +922,7 @@ def _horizon_row(
         "expected_survivors_if_alive": _optional_float(
             summary.get("expected_survivors_if_alive"),
         ),
-        "note": "",
+        "note": note,
     }
 
 
@@ -846,6 +937,8 @@ def _empty_horizon_row(
         "horizon": horizon,
         "status": "not evaluated",
         "weeks_evaluated": len(weeks),
+        "fallback_coverage_pct": None,
+        "full_season_ev_reliability": "not_evaluated",
         "path_ev": None,
         "ev_dollars": None,
         "ev_multiple_vs_entry_fee": None,
@@ -880,11 +973,22 @@ def _prepare_schedule(schedule_df: pd.DataFrame) -> pd.DataFrame:
     return schedule.sort_values(["week", "game_id"]).reset_index(drop=True)
 
 
-def _prepare_team_probabilities(schedule: pd.DataFrame, odds_df: pd.DataFrame) -> pd.DataFrame:
+def _prepare_team_probabilities(
+    schedule: pd.DataFrame,
+    odds_df: pd.DataFrame,
+    team_strength_df: pd.DataFrame,
+    *,
+    team_strength_home_field_adjustment: float = DEFAULT_TEAM_STRENGTH_HOME_FIELD_ADJUSTMENT,
+    team_strength_scale: float = DEFAULT_FORWARD_TEAM_STRENGTH_SCALE,
+) -> pd.DataFrame:
+    _validate_team_strength_parameters(
+        team_strength_home_field_adjustment=team_strength_home_field_adjustment,
+        team_strength_scale=team_strength_scale,
+    )
     teams = _schedule_team_rows(schedule)
     h2h = _extract_h2h_probabilities(odds_df)
     spreads = _extract_spread_probabilities(odds_df)
-    strength = _extract_team_strength(odds_df)
+    strength = _extract_team_strength(odds_df, team_strength_df)
 
     probabilities = teams.merge(
         h2h[["week", "game_id", "team", "h2h_probability"]],
@@ -933,7 +1037,15 @@ def _prepare_team_probabilities(schedule: pd.DataFrame, odds_df: pd.DataFrame) -
         team_strength = _float_or_none(row.get("team_strength_score"))
         opponent_strength = _float_or_none(row.get("opponent_team_strength_score"))
         if team_strength is not None and opponent_strength is not None:
-            win_probabilities.append(estimate_game_win_probability(row))
+            win_probabilities.append(
+                estimate_team_strength_win_probability(
+                    team_rating=team_strength,
+                    opponent_rating=opponent_strength,
+                    is_home=row.get("is_home"),
+                    home_field_adjustment=team_strength_home_field_adjustment,
+                    scale=team_strength_scale,
+                ),
+            )
             sources.append(PROBABILITY_SOURCE_PROJECTED_TEAM_STRENGTH)
             continue
 
@@ -1052,7 +1164,14 @@ def _extract_spread_probabilities(odds_df: pd.DataFrame) -> pd.DataFrame:
     )
 
 
-def _extract_team_strength(odds_df: pd.DataFrame) -> pd.DataFrame:
+def _extract_team_strength(
+    odds_df: pd.DataFrame,
+    team_strength_df: pd.DataFrame,
+) -> pd.DataFrame:
+    explicit_strength = _normalize_team_strength_input(team_strength_df)
+    if not explicit_strength.empty:
+        return explicit_strength
+
     if odds_df.empty:
         return pd.DataFrame(columns=["team", "team_strength_score"])
 
@@ -1082,6 +1201,51 @@ def _extract_team_strength(odds_df: pd.DataFrame) -> pd.DataFrame:
     except Exception:
         return pd.DataFrame(columns=["team", "team_strength_score"])
     return strength[["team", "team_strength_score"]].copy()
+
+
+def _normalize_team_strength_input(team_strength_df: pd.DataFrame) -> pd.DataFrame:
+    if team_strength_df.empty:
+        return pd.DataFrame(columns=["team", "team_strength_score"])
+
+    strength = team_strength_df.copy()
+    if "team_strength_score" not in strength.columns and "rating" in strength.columns:
+        strength = strength.rename(columns={"rating": "team_strength_score"})
+    required = {"team", "team_strength_score"}
+    missing = required - set(strength.columns)
+    if missing:
+        missing_text = ", ".join(sorted(missing))
+        raise ValueError(f"team strength data is missing required columns: {missing_text}")
+
+    strength["team"] = strength["team"].astype(str).str.strip()
+    strength["team_strength_score"] = pd.to_numeric(
+        strength["team_strength_score"],
+        errors="raise",
+    )
+    strength = strength.dropna(subset=["team", "team_strength_score"])
+    if strength.empty:
+        return pd.DataFrame(columns=["team", "team_strength_score"])
+    duplicate_teams = strength.duplicated("team", keep=False)
+    if bool(duplicate_teams.any()):
+        examples = ", ".join(sorted(strength.loc[duplicate_teams, "team"].astype(str).unique())[:5])
+        raise ValueError(f"team strength data has duplicate teams: {examples}.")
+    return strength[["team", "team_strength_score"]].reset_index(drop=True)
+
+
+def _validate_team_strength_parameters(
+    *,
+    team_strength_home_field_adjustment: float,
+    team_strength_scale: float,
+) -> None:
+    try:
+        float(team_strength_home_field_adjustment)
+    except (TypeError, ValueError) as exc:
+        raise ValueError("team_strength_home_field_adjustment must be numeric.") from exc
+    try:
+        scale = float(team_strength_scale)
+    except (TypeError, ValueError) as exc:
+        raise ValueError("team_strength_scale must be numeric.") from exc
+    if scale <= 0:
+        raise ValueError("team_strength_scale must be positive.")
 
 
 def _normalize_game_probabilities(probabilities: pd.DataFrame) -> pd.DataFrame:

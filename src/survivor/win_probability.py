@@ -10,7 +10,8 @@ import pandas as pd
 
 DEFAULT_SPREAD_LOGISTIC_COEFFICIENT = 0.135
 DEFAULT_TEAM_STRENGTH_COEFFICIENT = 4.0
-DEFAULT_HOME_FIELD_STRENGTH_EDGE = 0.02
+DEFAULT_HOME_FIELD_STRENGTH_EDGE = 0.0
+DEFAULT_TEAM_STRENGTH_SCALE = 0.25
 
 
 def estimate_game_win_probability(
@@ -19,6 +20,7 @@ def estimate_game_win_probability(
     spread_coefficient: float = DEFAULT_SPREAD_LOGISTIC_COEFFICIENT,
     team_strength_coefficient: float = DEFAULT_TEAM_STRENGTH_COEFFICIENT,
     home_field_strength_edge: float = DEFAULT_HOME_FIELD_STRENGTH_EDGE,
+    team_strength_scale: float | None = None,
 ) -> float:
     """Estimate a team's win probability from the best available signal.
 
@@ -41,17 +43,39 @@ def estimate_game_win_probability(
     team_strength = _float_or_none(_get(row, "team_strength_score"))
     opponent_strength = _float_or_none(_get(row, "opponent_team_strength_score"))
     if team_strength is not None and opponent_strength is not None:
-        diff = team_strength - opponent_strength + _home_field_edge(
-            _get(row, "is_home"),
-            home_field_strength_edge,
+        scale = (
+            float(team_strength_scale)
+            if team_strength_scale is not None
+            else 1.0 / float(team_strength_coefficient)
         )
-        return _clip_probability(
-            1.0 / (1.0 + exp(-team_strength_coefficient * diff)),
+        return estimate_team_strength_win_probability(
+            team_rating=team_strength,
+            opponent_rating=opponent_strength,
+            is_home=_get(row, "is_home"),
+            home_field_adjustment=home_field_strength_edge,
+            scale=scale,
         )
     if team_strength is not None:
         return _clip_probability(team_strength)
 
     return 0.5
+
+
+def estimate_team_strength_win_probability(
+    *,
+    team_rating: float,
+    opponent_rating: float,
+    is_home: Any = None,
+    home_field_adjustment: float = DEFAULT_HOME_FIELD_STRENGTH_EDGE,
+    scale: float = DEFAULT_TEAM_STRENGTH_SCALE,
+) -> float:
+    """Estimate win probability from two team ratings and optional home field."""
+    numeric_scale = float(scale)
+    if numeric_scale <= 0:
+        raise ValueError("team strength scale must be positive.")
+    adjustment = _home_field_edge(is_home, home_field_adjustment)
+    z = (float(team_rating) - float(opponent_rating) + adjustment) / numeric_scale
+    return _clip_probability(1.0 / (1.0 + exp(-z)))
 
 
 def _get(row: dict[str, Any] | pd.Series, key: str) -> Any:

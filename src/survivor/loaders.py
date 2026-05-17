@@ -25,6 +25,7 @@ from survivor.schemas import (
     validate_public_picks_df,
     validate_schedule_df,
     validate_season_data_relationships,
+    validate_team_strength_df,
 )
 from survivor.teams import normalize_team_name
 
@@ -44,6 +45,7 @@ SEASON_FILE_NAMES = {
     "entries": "entries.csv",
     "pool_history": "pool_history.csv",
     "double_pick_weeks": "double_pick_weeks.csv",
+    "team_strength": "team_strength.csv",
 }
 SAMPLE_FILE_NAMES = {
     "schedule": ("schedule_sample.csv", "schedule.csv"),
@@ -187,6 +189,19 @@ def load_double_pick_weeks_df(path: str | Path) -> pd.DataFrame:
     return _strip_string_columns(df).sort_values(["week"]).reset_index(drop=True)
 
 
+def load_team_strength_df(path: str | Path) -> pd.DataFrame:
+    """Load season-level team-strength ratings with canonical team IDs."""
+    df = _read_csv(path)
+    validate_or_raise("team_strength", df, validate_team_strength_df(df), str(path))
+    strength = df.copy()
+    strength["season"] = pd.to_numeric(strength["season"], errors="raise").astype(int)
+    strength["team"] = strength["team"].map(normalize_team_name)
+    strength["rating"] = pd.to_numeric(strength["rating"], errors="raise").astype(float)
+    return _strip_string_columns(strength).sort_values(["season", "team"]).reset_index(
+        drop=True,
+    )
+
+
 def load_sample_data(sample_dir: str | Path = SAMPLE_DATA_DIR) -> dict[str, pd.DataFrame]:
     """Load a checked-in sample data bundle used by tests and the CLI.
 
@@ -226,6 +241,7 @@ def load_season_data(
             "entries_df": sample_data["entries"],
             "pool_history_df": None,
             "double_pick_weeks_df": None,
+            "team_strength_df": None,
         }
 
     base = _resolve_season_dir(season=season, data_dir=data_dir)
@@ -246,6 +262,11 @@ def load_season_data(
         "double_pick_weeks_df": (
             load_double_pick_weeks_df,
             base / SEASON_FILE_NAMES["double_pick_weeks"],
+            False,
+        ),
+        "team_strength_df": (
+            load_team_strength_df,
+            base / SEASON_FILE_NAMES["team_strength"],
             False,
         ),
     }

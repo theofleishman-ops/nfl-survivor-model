@@ -39,6 +39,9 @@ def build_single_entry_path_ev_report(
         "",
         "## Path EV",
         "",
+        f"- Full-season EV reliability: {diagnostics.get('full_season_ev_reliability', 'not_applicable')}",
+        f"- Full-season EV actionability: {diagnostics.get('full_season_ev_actionability', 'not_applicable')}",
+        f"- Fallback coverage: {_format_optional_pct(diagnostics.get('fallback_coverage_pct'))}",
         f"- Evaluation horizon: {diagnostics.get('horizon', 'unknown')}",
         f"- Number of weeks evaluated: {diagnostics.get('number_of_weeks_evaluated', len(result.best_path))}",
         f"- Entry fee: {_format_money_or_blank(result.entry_fee)}",
@@ -57,6 +60,10 @@ def build_single_entry_path_ev_report(
         f"- Cumulative path EV: {_format_equity_pct(result.best_path_ev)}",
         f"- Weeks with real odds: {_format_week_list(diagnostics.get('weeks_with_real_odds'))}",
         f"- Weeks with projected odds: {_format_week_list(diagnostics.get('weeks_with_projected_odds'))}",
+        (
+            f"- Weeks with projected team-strength probabilities: "
+            f"{_format_week_list(diagnostics.get('weeks_with_projected_team_strength_probabilities'))}"
+        ),
         (
             f"- Weeks using fallback probabilities: "
             f"{_format_week_list(diagnostics.get('weeks_using_fallback_probabilities'))}"
@@ -86,6 +93,8 @@ def build_single_entry_path_ev_report(
                 "label",
                 "status",
                 "weeks_evaluated",
+                "fallback_coverage_pct",
+                "full_season_ev_reliability",
                 "path_ev",
                 "ev_dollars",
                 "ev_multiple_vs_entry_fee",
@@ -250,6 +259,7 @@ def _markdown_table(df: pd.DataFrame, columns: list[str]) -> str:
             "expected_equity_if_alive",
             "cumulative_path_ev",
             "weekly_ev_delta",
+            "fallback_coverage_pct",
         }:
             if column in {
                 "path_ev",
@@ -282,6 +292,7 @@ def _markdown_table(df: pd.DataFrame, columns: list[str]) -> str:
             "note",
             "selected_by_path_ev",
             "probability_source",
+            "full_season_ev_reliability",
         }:
             table[column] = table[column].map(_format_number)
 
@@ -320,6 +331,12 @@ def _format_optional_rate(value: Any) -> str:
     if value is None or pd.isna(value):
         return "not applicable"
     return _format_rate_pct(value)
+
+
+def _format_optional_pct(value: Any) -> str:
+    if value is None or pd.isna(value):
+        return "not applicable"
+    return _format_pct(value)
 
 
 def _format_equity_pct(value: Any) -> str:

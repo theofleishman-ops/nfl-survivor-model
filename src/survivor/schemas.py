@@ -9,7 +9,7 @@ from typing import Any
 import pandas as pd
 
 from survivor.game_ids import MAX_SEASON, MIN_SEASON, build_game_id, parse_game_id
-from survivor.teams import normalize_team_name
+from survivor.teams import CANONICAL_TEAMS, normalize_team_name
 
 
 @dataclass(frozen=True)
@@ -182,6 +182,17 @@ DOUBLE_PICK_WEEKS_SCHEMA = CsvSchema(
     },
 )
 
+TEAM_STRENGTH_SCHEMA = CsvSchema(
+    required_columns=("season", "team", "rating", "source", "notes"),
+    column_types={
+        "season": "NFL season year",
+        "team": "canonical team or accepted alias",
+        "rating": "numeric team-strength rating",
+        "source": "rating source descriptor",
+        "notes": "optional free-text notes",
+    },
+)
+
 DATASET_SCHEMAS = {
     "schedule": SCHEDULE_SCHEMA,
     "odds": ODDS_SCHEMA,
@@ -191,6 +202,7 @@ DATASET_SCHEMAS = {
     "entries_history": ENTRIES_HISTORY_SCHEMA,
     "pool_history": POOL_HISTORY_SCHEMA,
     "double_pick_weeks": DOUBLE_PICK_WEEKS_SCHEMA,
+    "team_strength": TEAM_STRENGTH_SCHEMA,
 }
 
 
@@ -563,6 +575,19 @@ def validate_double_pick_weeks_df(df: pd.DataFrame) -> list[str]:
     return errors
 
 
+def validate_team_strength_df(df: pd.DataFrame) -> list[str]:
+    """Return validation errors for season-level team-strength ratings."""
+    errors: list[str] = []
+    required = TEAM_STRENGTH_SCHEMA.required_columns
+    _validate_required_columns(df, required, "team_strength", errors)
+    _validate_required_values(df, ("season", "team", "rating", "source"), "team_strength", errors)
+    _validate_season_column_if_present(df, "team_strength", errors)
+    _validate_team_alias_columns(df, ["team"], "team_strength", errors)
+    _validate_numeric_column(df, "rating", "team_strength", errors)
+    _validate_team_strength_roster(df, errors)
+    return errors
+
+
 def validate_or_raise(
     dataset_name: str,
     df: pd.DataFrame,
@@ -916,6 +941,25 @@ def _validate_moneyline_column(
         )
 
 
+def _validate_numeric_column(
+    df: pd.DataFrame,
+    column: str,
+    label: str,
+    errors: list[str],
+) -> None:
+    if column not in df.columns:
+        return
+
+    values = pd.to_numeric(df[column], errors="coerce")
+    present = ~df[column].map(_is_blank)
+    invalid_numeric = present & values.isna()
+    if bool(invalid_numeric.any()):
+        errors.append(
+            f"{label} column '{column}' must be numeric on rows "
+            f"{_format_rows(invalid_numeric)}."
+        )
+
+
 def _validate_probability_column(
     df: pd.DataFrame,
     column: str,
@@ -1072,6 +1116,52 @@ def _validate_team_week_uniqueness(
         f"{label} has teams appearing more than once in the same week on rows "
         f"{_format_row_numbers(duplicate_rows)}."
     )
+
+
+def _validate_team_strength_roster(
+    df: pd.DataFrame,
+    errors: list[str],
+) -> None:
+    required = {"season", "team"}
+    if not required.issubset(df.columns):
+        return
+
+    rows: list[dict[str, int | str]] = []
+    for index, row in df.iterrows():
+        if _is_blank(row.get("season")) or _is_blank(row.get("team")):
+            continue
+        try:
+            season = int(pd.to_numeric(row["season"], errors="raise"))
+            team = normalize_team_name(row["team"])
+        except (TypeError, ValueError):
+            continue
+        rows.append({"season": season, "team": team, "source_row": int(index)})
+
+    if not rows:
+        return
+
+    roster = pd.DataFrame(rows)
+    duplicate_mask = roster.duplicated(subset=["season", "team"], keep=False)
+    if bool(duplicate_mask.any()):
+        duplicate_rows = sorted(
+            {int(row) + 2 for row in roster.loc[duplicate_mask, "source_row"]},
+        )
+        errors.append(
+            "team_strength must have exactly one row per team per season; "
+            f"duplicate rows {_format_row_numbers(duplicate_rows)}."
+        )
+
+    expected = set(CANONICAL_TEAMS)
+    for season, season_df in roster.groupby("season", sort=True):
+        present = set(season_df["team"].astype(str))
+        missing = sorted(expected - present)
+        if missing:
+            shown = ", ".join(missing[:10])
+            suffix = f", and {len(missing) - 10} more" if len(missing) > 10 else ""
+            errors.append(
+                "team_strength must include exactly one row for every NFL team "
+                f"in season {int(season)}; missing: {shown}{suffix}."
+            )
 
 
 def _validate_entries_survived_not_greater_than_start(

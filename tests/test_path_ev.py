@@ -357,6 +357,67 @@ def test_forward_probabilities_tag_real_projected_and_fallback_sources():
     assert game_totals.tolist() == pytest.approx([1.0, 1.0, 1.0, 1.0])
 
 
+def test_team_strength_equal_teams_are_near_coin_flip():
+    schedule = pd.DataFrame(
+        [{"week": 1, "game_id": "W1_A_B", "home_team": "A", "away_team": "B"}],
+    )
+    strength = pd.DataFrame(
+        [
+            {"team": "A", "rating": 0.50},
+            {"team": "B", "rating": 0.50},
+        ],
+    )
+
+    probabilities = build_forward_game_probabilities(
+        schedule,
+        pd.DataFrame(),
+        team_strength_df=strength,
+    )
+
+    assert _win_probability_for(probabilities, 1, "A") == pytest.approx(0.50)
+    assert _source_for(probabilities, 1, "A") == "projected_team_strength"
+
+
+def test_team_strength_strong_team_beats_weak_team_above_sixty_percent():
+    schedule = pd.DataFrame(
+        [{"week": 1, "game_id": "W1_A_B", "home_team": "A", "away_team": "B"}],
+    )
+    strength = pd.DataFrame(
+        [
+            {"team": "A", "rating": 0.70},
+            {"team": "B", "rating": 0.40},
+        ],
+    )
+
+    probabilities = build_forward_game_probabilities(
+        schedule,
+        pd.DataFrame(),
+        team_strength_df=strength,
+    )
+
+    assert _win_probability_for(probabilities, 1, "A") > 0.60
+
+
+def test_team_strength_weak_away_team_against_strong_team_below_forty_percent():
+    schedule = pd.DataFrame(
+        [{"week": 1, "game_id": "W1_B_A", "home_team": "A", "away_team": "B"}],
+    )
+    strength = pd.DataFrame(
+        [
+            {"team": "A", "rating": 0.70},
+            {"team": "B", "rating": 0.40},
+        ],
+    )
+
+    probabilities = build_forward_game_probabilities(
+        schedule,
+        pd.DataFrame(),
+        team_strength_df=strength,
+    )
+
+    assert _win_probability_for(probabilities, 1, "B") < 0.40
+
+
 def test_full_season_horizon_uses_projected_team_strength_without_breaking_available_mode():
     schedule = pd.DataFrame(
         [
@@ -412,6 +473,90 @@ def test_full_season_horizon_uses_projected_team_strength_without_breaking_avail
     assert full_season.diagnostics["weeks_using_fallback_probabilities"] == []
     assert "cumulative_path_ev" in full_season.expected_field_size_by_week.columns
     assert "weekly_ev_delta" in full_season.expected_field_size_by_week.columns
+
+
+def test_path_ev_uses_team_strength_projection_instead_of_fallback_default():
+    schedule = pd.DataFrame(
+        [
+            {"week": 1, "game_id": "W1_A_B", "home_team": "A", "away_team": "B"},
+            {"week": 2, "game_id": "W2_C_D", "home_team": "C", "away_team": "D"},
+        ],
+    )
+    odds = pd.DataFrame(
+        [
+            _odds_row(1, "W1_A_B", "A", "B", 0.70),
+            _odds_row(1, "W1_A_B", "B", "A", 0.30),
+        ],
+    )
+    strength = pd.DataFrame(
+        [
+            {"team": "C", "rating": 0.80},
+            {"team": "D", "rating": 0.30},
+        ],
+    )
+    public_picks = pd.DataFrame([{"week": 1, "team": "A", "public_pick_pct": 1.0}])
+
+    result = optimize_single_entry_path(
+        schedule,
+        odds,
+        public_picks,
+        start_week=1,
+        pool_size=100,
+        simulations=100,
+        random_seed=17,
+        top_k=2,
+        beam_width=4,
+        path_ev_horizon="full-season",
+        team_strength_df=strength,
+    )
+
+    week_2 = result.best_path[result.best_path["week"].astype(int) == 2].iloc[0]
+    assert week_2["probability_source"] == "projected_team_strength"
+    assert result.diagnostics["weeks_using_fallback_probabilities"] == []
+
+
+def test_report_marks_full_season_unreliable_when_fallback_coverage_is_high():
+    result = optimize_single_entry_path(
+        _fallback_heavy_schedule(),
+        _odds_row_frame_for_week_1_only(),
+        pd.DataFrame([{"week": 1, "team": "A", "public_pick_pct": 1.0}]),
+        start_week=1,
+        pool_size=100,
+        simulations=100,
+        random_seed=21,
+        top_k=2,
+        beam_width=8,
+        path_ev_horizon="full-season",
+    )
+
+    report = build_single_entry_path_ev_report(result, week=1)
+
+    assert result.diagnostics["fallback_coverage_pct"] > 0.25
+    assert result.diagnostics["full_season_ev_reliability"] == "UNRELIABLE"
+    assert "Full-season EV reliability: UNRELIABLE" in report
+    assert "not_actionable_high_fallback_coverage" in report
+
+
+def test_report_marks_full_season_more_usable_when_team_strength_covers_all_teams():
+    result = optimize_single_entry_path(
+        _fallback_heavy_schedule(),
+        _odds_row_frame_for_week_1_only(),
+        pd.DataFrame([{"week": 1, "team": "A", "public_pick_pct": 1.0}]),
+        start_week=1,
+        pool_size=100,
+        simulations=100,
+        random_seed=21,
+        top_k=2,
+        beam_width=8,
+        path_ev_horizon="full-season",
+        team_strength_df=_team_strength_for_fallback_heavy_schedule(),
+    )
+
+    report = build_single_entry_path_ev_report(result, week=1)
+
+    assert result.diagnostics["fallback_coverage_pct"] == 0
+    assert result.diagnostics["full_season_ev_reliability"] == "USABLE"
+    assert "Full-season EV reliability: USABLE" in report
 
 
 def test_projected_ownership_uses_team_popularity_placeholder_and_scarcity():
@@ -655,3 +800,44 @@ def _source_for(probabilities: pd.DataFrame, week: int, team: str) -> str:
         & (probabilities["team"].astype(str) == team)
     ].iloc[0]
     return str(row["probability_source"])
+
+
+def _win_probability_for(probabilities: pd.DataFrame, week: int, team: str) -> float:
+    row = probabilities[
+        (probabilities["week"].astype(int) == int(week))
+        & (probabilities["team"].astype(str) == team)
+    ].iloc[0]
+    return float(row["win_probability"])
+
+
+def _fallback_heavy_schedule() -> pd.DataFrame:
+    return pd.DataFrame(
+        [
+            {"week": 1, "game_id": "W1_A_B", "home_team": "A", "away_team": "B"},
+            {"week": 2, "game_id": "W2_C_D", "home_team": "C", "away_team": "D"},
+            {"week": 3, "game_id": "W3_E_F", "home_team": "E", "away_team": "F"},
+            {"week": 4, "game_id": "W4_G_H", "home_team": "G", "away_team": "H"},
+        ],
+    )
+
+
+def _odds_row_frame_for_week_1_only() -> pd.DataFrame:
+    return pd.DataFrame(
+        [
+            _odds_row(1, "W1_A_B", "A", "B", 0.70),
+            _odds_row(1, "W1_A_B", "B", "A", 0.30),
+        ],
+    )
+
+
+def _team_strength_for_fallback_heavy_schedule() -> pd.DataFrame:
+    return pd.DataFrame(
+        [
+            {"team": "C", "rating": 0.65},
+            {"team": "D", "rating": 0.45},
+            {"team": "E", "rating": 0.64},
+            {"team": "F", "rating": 0.46},
+            {"team": "G", "rating": 0.63},
+            {"team": "H", "rating": 0.47},
+        ],
+    )

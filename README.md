@@ -81,11 +81,12 @@ Optional files are also created for later use:
 ```text
 data/raw/2026/pool_history.csv
 data/raw/2026/double_pick_weeks.csv
+data/raw/2026/team_strength.csv
 ```
 
 Only `data/raw/2026/schedule.csv` is meant to be versioned for the real 2026
-workspace. Keep odds, public picks, entries, pool history, and double-pick-week
-files local unless you intentionally create sanitized fixtures under
+workspace. Keep odds, public picks, entries, pool history, double-pick-week,
+and team-strength files local unless you intentionally create sanitized fixtures under
 `data/raw/templates/`.
 
 Validate the season files:
@@ -113,6 +114,9 @@ placeholders, clearly marked with `SYNTHETIC_FIXTURE`, and exist only to prove
 that the real-data join path, rankings, simulations, and portfolio optimizer
 can run end to end. Do not use those synthetic values for real contest
 decisions.
+
+A standalone synthetic team-strength example is available at
+`data/sample/team_strength_sample.csv`.
 
 Run the fixture:
 
@@ -156,6 +160,49 @@ that matches the schedule game IDs:
 ```powershell
 python scripts/run_live_week.py --season 2026 --week 1
 ```
+
+Full-season path EV needs projected future game probabilities after the current
+odds horizon ends. Without projections, future weeks fall back to a conservative
+home-team default and the optimizer can produce paths that look precise but are
+not actionable. To make full-season EV usable, create a private
+`team_strength.csv` from:
+
+```text
+data/raw/templates/team_strength_template.csv
+```
+
+The schema is:
+
+```text
+season,team,rating,source,notes
+```
+
+Use one row per NFL team. Team aliases are canonicalized during loading, but the
+validated file must resolve to exactly one row for each team. `rating` is a
+numeric power rating in whatever scale you choose. The path model converts a
+game to:
+
+```text
+win_prob = logistic((team_rating - opponent_rating + home_field_adjustment) / scale)
+```
+
+Set `--team-strength-scale` and `--team-strength-home-field` to match your
+rating units. For normalized 0..1 ratings, the defaults are intentionally
+conservative. If you use point-spread-style power ratings, use a larger scale
+and home-field adjustment in the same units.
+
+Example:
+
+```powershell
+python scripts/run_single_entry_optimizer.py --season 2026 --week 1 --data-dir data/raw/2026 --team-strength data/raw/2026/team_strength.csv --path-ev-horizon full-season
+python scripts/run_live_week.py --season 2026 --week 1 --run-path-ev --team-strength data/raw/2026/team_strength.csv --path-ev-horizon full-season
+```
+
+Futures, win totals, market priors, and external power ratings can be used
+later as inputs to your `team_strength.csv`; this repo does not scrape or call
+new APIs for those projections. When your ratings are incomplete or weak,
+`--path-ev-horizon available` remains the safest operating mode because it only
+scores consecutive weeks with real odds.
 
 The template files live in:
 
@@ -597,11 +644,14 @@ Assumptions and limitations:
   of good alternatives in that week.
 - Win probabilities are tagged as `real_moneyline`, `real_spread`,
   `projected_team_strength`, or `fallback_default`. The model uses no-vig
-  moneyline first, then spread, then futures/win-total or explicit team-strength
-  priors with opponent strength and home field, then a conservative default.
+  moneyline first, then spread, then `team_strength.csv` ratings with opponent
+  strength and configurable home field, then a conservative default.
 - `--path-ev-horizon available` still evaluates only consecutive weeks with
   real odds. Use `--path-ev-horizon full-season` to optimize against projected
   probabilities for every remaining scheduled week.
+- Full-season EV reports show fallback coverage. If more than 25% of evaluated
+  path weeks use `fallback_default`, the report labels full-season EV as
+  `UNRELIABLE` and treats it as diagnostic rather than actionable.
 - Final equity assumes winner-take-all or equal split among survivors.
 - The public field is modeled in aggregate by week and does not track every
   public entry's used-team history.
