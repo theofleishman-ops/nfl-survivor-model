@@ -151,6 +151,41 @@ def _build_parser() -> argparse.ArgumentParser:
         help="Deterministic random seed.",
     )
     parser.add_argument(
+        "--run-path-ev",
+        action="store_true",
+        help="Run the single-entry path EV optimizer as part of the live workflow.",
+    )
+    parser.add_argument(
+        "--path-ev-simulations",
+        type=int,
+        default=None,
+        help="Monte Carlo simulations for path EV. Defaults to --simulations.",
+    )
+    parser.add_argument(
+        "--beam-width",
+        type=int,
+        default=LiveWeekOptions.beam_width,
+        help="Number of single-entry paths retained after each beam-search week.",
+    )
+    parser.add_argument(
+        "--top-k",
+        type=int,
+        default=LiveWeekOptions.top_k,
+        help="Weekly candidates expanded per path in the path EV optimizer.",
+    )
+    parser.add_argument(
+        "--entry-fee",
+        type=float,
+        default=None,
+        help="Optional entry cost for path EV multiple and edge reporting.",
+    )
+    parser.add_argument(
+        "--prize-pool",
+        type=float,
+        default=None,
+        help="Optional prize pool for path EV dollar reporting.",
+    )
+    parser.add_argument(
         "--dry-run",
         action="store_true",
         help="Run validations and calculations without writing imported data or reports.",
@@ -178,6 +213,12 @@ def _options_from_args(args: argparse.Namespace) -> LiveWeekOptions:
         public_pick_format=args.public_picks_format,
         public_pick_source=args.public_picks_source,
         aggregate_public_picks=not args.no_aggregate_public_picks,
+        run_path_ev=args.run_path_ev,
+        path_ev_simulations=args.path_ev_simulations,
+        beam_width=args.beam_width,
+        top_k=args.top_k,
+        entry_fee=args.entry_fee,
+        prize_pool=args.prize_pool,
         dry_run=args.dry_run,
     )
 
