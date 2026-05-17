@@ -33,6 +33,7 @@ from survivor.path_ev import (
     DEFAULT_BEAM_WIDTH,
     DEFAULT_FORWARD_TEAM_STRENGTH_SCALE,
     DEFAULT_PATH_EV_HORIZON,
+    DEFAULT_PUBLIC_FIELD_SAMPLE_SIZE,
     DEFAULT_TEAM_STRENGTH_HOME_FIELD_ADJUSTMENT,
     DEFAULT_TOP_K,
     SingleEntryPathOptimizationResult,
@@ -80,6 +81,7 @@ class LiveWeekOptions:
     aggregate_public_picks: bool = True
     run_path_ev: bool = False
     path_ev_simulations: int | None = None
+    public_field_sample_size: int | None = DEFAULT_PUBLIC_FIELD_SAMPLE_SIZE
     beam_width: int = DEFAULT_BEAM_WIDTH
     top_k: int = DEFAULT_TOP_K
     path_ev_horizon: str = DEFAULT_PATH_EV_HORIZON
@@ -266,6 +268,7 @@ def run_live_week(
                 random_seed=options.seed,
                 top_k=options.top_k,
                 beam_width=options.beam_width,
+                public_field_sample_size=options.public_field_sample_size,
                 entry_fee=options.entry_fee,
                 prize_pool=options.prize_pool,
                 path_ev_horizon=options.path_ev_horizon,
@@ -521,6 +524,7 @@ def _path_ev_status_detail(
         f"{_effective_path_ev_simulations(options)} simulations, "
         f"{diagnostics.get('number_of_weeks_evaluated', len(result.best_path))} weeks, "
         f"{diagnostics.get('horizon', options.path_ev_horizon)} horizon, "
+        f"{diagnostics.get('public_field_model', 'unknown')} field, "
         f"{pick['team']} over {pick['opponent']}"
     )
 
@@ -546,6 +550,21 @@ def _path_ev_summary_lines(
         f"Baseline Fair Value: {_format_money_or_not_provided(result.baseline_value)}",
         f"Path EV Estimate: {_format_equity_pct(result.best_path_ev)}",
         f"Path Survival Probability: {_format_rate_pct(result.path_survival_probability)}",
+        f"Public Field Model: {diagnostics.get('public_field_model', 'unknown')}",
+        (
+            "Public Field Sample Size: "
+            f"{_format_optional_count(diagnostics.get('public_field_sample_size'))}"
+        ),
+        (
+            "Path Uniqueness Score: "
+            f"{_format_optional_pct(diagnostics.get('path_uniqueness_score'))}"
+        ),
+        (
+            "Expected Public Overlap: "
+            f"{_format_optional_count(diagnostics.get('expected_public_overlap_entries'))} "
+            f"({_format_optional_pct(diagnostics.get('expected_public_overlap_pct'))})"
+        ),
+        f"Scarcity Weeks: {_format_week_list(diagnostics.get('scarcity_weeks'))}",
         (
             "Expected Final Survivors If Alive: "
             f"{result.expected_survivors_if_alive:.2f}"
@@ -616,6 +635,21 @@ def _markdown_path_ev_summary_lines(
         f"- Baseline fair value: {_format_money_or_not_provided(result.baseline_value)}",
         f"- Path EV estimate: {_format_equity_pct(result.best_path_ev)}",
         f"- Path survival probability: {_format_rate_pct(result.path_survival_probability)}",
+        f"- Public field model: {diagnostics.get('public_field_model', 'unknown')}",
+        (
+            "- Public field sample size: "
+            f"{_format_optional_count(diagnostics.get('public_field_sample_size'))}"
+        ),
+        (
+            "- Path uniqueness score: "
+            f"{_format_optional_pct(diagnostics.get('path_uniqueness_score'))}"
+        ),
+        (
+            "- Expected public overlap: "
+            f"{_format_optional_count(diagnostics.get('expected_public_overlap_entries'))} "
+            f"({_format_optional_pct(diagnostics.get('expected_public_overlap_pct'))})"
+        ),
+        f"- Scarcity weeks: {_format_week_list(diagnostics.get('scarcity_weeks'))}",
         f"- Expected final survivors if alive: {result.expected_survivors_if_alive:.2f}",
         f"- Weeks with real odds: {_format_week_list(diagnostics.get('weeks_with_real_odds'))}",
         f"- Weeks with projected odds: {_format_week_list(diagnostics.get('weeks_with_projected_odds'))}",
@@ -1126,6 +1160,11 @@ def _validate_options(options: LiveWeekOptions) -> None:
             raise LiveWeekWorkflowError("--beam-width must be positive.")
         if options.top_k <= 0:
             raise LiveWeekWorkflowError("--top-k must be positive.")
+        if (
+            options.public_field_sample_size is not None
+            and options.public_field_sample_size <= 0
+        ):
+            raise LiveWeekWorkflowError("--public-field-sample-size must be positive.")
         if options.path_ev_horizon not in {"week", "current", "available", "full-season"}:
             raise LiveWeekWorkflowError(
                 "--path-ev-horizon must be one of: week, current, available, full-season.",
@@ -1260,6 +1299,15 @@ def _format_optional_pct(value: object) -> str:
     if value is None or pd.isna(value):
         return "not applicable"
     return f"{float(value):.1%}"
+
+
+def _format_optional_count(value: object) -> str:
+    if value is None or pd.isna(value):
+        return "not applicable"
+    numeric = float(value)
+    if abs(numeric) >= 100:
+        return f"{numeric:,.0f}"
+    return f"{numeric:,.2f}"
 
 
 def _format_equity_pct(value: float) -> str:

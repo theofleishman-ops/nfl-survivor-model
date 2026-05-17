@@ -17,6 +17,7 @@ if str(SRC_DIR) not in sys.path:
 from survivor.loaders import load_sample_data, load_season_data, load_team_strength_df  # noqa: E402
 from survivor.path_ev import (  # noqa: E402
     DEFAULT_FORWARD_TEAM_STRENGTH_SCALE,
+    DEFAULT_PUBLIC_FIELD_SAMPLE_SIZE,
     DEFAULT_TEAM_STRENGTH_HOME_FIELD_ADJUSTMENT,
     PATH_EV_HORIZONS,
     optimize_single_entry_path,
@@ -47,6 +48,12 @@ def main() -> None:
         type=int,
         default=100,
         help="Number of paths retained after each beam-search week.",
+    )
+    parser.add_argument(
+        "--public-field-sample-size",
+        type=int,
+        default=DEFAULT_PUBLIC_FIELD_SAMPLE_SIZE,
+        help="Weighted public entries sampled per path-EV simulation.",
     )
     parser.add_argument(
         "--top-k",
@@ -134,6 +141,7 @@ def main() -> None:
         random_seed=args.seed,
         top_k=args.top_k,
         beam_width=args.beam_width,
+        public_field_sample_size=args.public_field_sample_size,
         entry_fee=args.entry_fee,
         prize_pool=args.prize_pool,
         path_ev_horizon=args.path_ev_horizon,
@@ -177,6 +185,17 @@ def main() -> None:
         f"{_format_edge_or_not_provided(result.expected_edge_vs_baseline)}"
     )
     print(f"Path survival probability: {_format_rate_pct(result.path_survival_probability)}")
+    print(f"Public field model: {diagnostics.get('public_field_model', 'unknown')}")
+    print(
+        "Path uniqueness score: "
+        f"{_format_optional_pct(diagnostics.get('path_uniqueness_score'))}"
+    )
+    print(
+        "Expected public overlap: "
+        f"{_format_optional_count(diagnostics.get('expected_public_overlap_entries'))} "
+        f"({_format_optional_pct(diagnostics.get('expected_public_overlap_pct'))})"
+    )
+    print(f"Scarcity weeks: {_format_week_list(diagnostics.get('scarcity_weeks'))}")
     print(f"Weeks with real odds: {_format_week_list(diagnostics.get('weeks_with_real_odds'))}")
     print(
         "Weeks with projected odds: "
@@ -331,6 +350,15 @@ def _format_optional_pct(value: object) -> str:
     if value is None or pd.isna(value):
         return "not applicable"
     return f"{float(value):.1%}"
+
+
+def _format_optional_count(value: object) -> str:
+    if value is None or pd.isna(value):
+        return "not applicable"
+    numeric = float(value)
+    if abs(numeric) >= 100:
+        return f"{numeric:,.0f}"
+    return f"{numeric:,.2f}"
 
 
 def _format_week_list(value: object) -> str:

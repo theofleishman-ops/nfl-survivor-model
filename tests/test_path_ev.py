@@ -653,6 +653,10 @@ def test_report_generation(tmp_path):
     assert "Weeks with projected odds" in report
     assert "Cumulative path EV" in report
     assert "Path EV Creation By Week" in report
+    assert "Public Field Evolution" in report
+    assert "Expected Team Exhaustion" in report
+    assert "Projected Future Ownership By Week" in report
+    assert "Path Uniqueness Diagnostics" in report
     assert "Heuristic Ranking Comparison" in report
     assert "Assumptions" in report_path.read_text(encoding="utf-8")
 

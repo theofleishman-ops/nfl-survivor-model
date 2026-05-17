@@ -58,6 +58,21 @@ def build_single_entry_path_ev_report(
         f"- Expected survivors conditional on my survival: {result.expected_survivors_if_alive:.2f}",
         f"- Expected equity if alive: {_format_equity_pct(result.expected_equity_if_alive)}",
         f"- Cumulative path EV: {_format_equity_pct(result.best_path_ev)}",
+        f"- Public field model: {diagnostics.get('public_field_model', 'unknown')}",
+        (
+            f"- Public field sample size: "
+            f"{_format_optional_count(diagnostics.get('public_field_sample_size'))}"
+        ),
+        (
+            f"- Path uniqueness score: "
+            f"{_format_optional_pct(diagnostics.get('path_uniqueness_score'))}"
+        ),
+        (
+            f"- Expected overlap with public field: "
+            f"{_format_optional_count(diagnostics.get('expected_public_overlap_entries'))} "
+            f"({_format_optional_pct(diagnostics.get('expected_public_overlap_pct'))})"
+        ),
+        f"- Scarcity weeks: {_format_week_list(diagnostics.get('scarcity_weeks'))}",
         f"- Weeks with real odds: {_format_week_list(diagnostics.get('weeks_with_real_odds'))}",
         f"- Weeks with projected odds: {_format_week_list(diagnostics.get('weeks_with_projected_odds'))}",
         (
@@ -134,9 +149,82 @@ def build_single_entry_path_ev_report(
             result.expected_field_size_by_week,
             [
                 "week",
+                "expected_public_entries_before_week",
                 "expected_public_entries",
                 "path_survival_probability",
                 "expected_total_entries",
+                "expected_public_overlap_entries",
+                "avg_path_overlap_pct",
+                "path_uniqueness_score",
+            ],
+        ),
+        "",
+        "## Public Field Evolution",
+        "",
+        _markdown_table(
+            pd.DataFrame(diagnostics.get("expected_remaining_field_by_week", [])),
+            [
+                "week",
+                "expected_remaining_entries",
+                "average_available_teams",
+                "max_projected_ownership_pct",
+                "expected_chalk_concentration",
+                "scarcity_index",
+                "scarcity_spike",
+            ],
+        ),
+        "",
+        "## Expected Team Exhaustion",
+        "",
+        _markdown_table(
+            pd.DataFrame(diagnostics.get("expected_team_exhaustion", [])),
+            [
+                "week",
+                "team",
+                "expected_entries_burned_team",
+                "burned_pct",
+                "expected_remaining_entries_with_team_available",
+                "remaining_field_available_pct",
+            ],
+        ),
+        "",
+        "## Projected Future Ownership By Week",
+        "",
+        _markdown_table(
+            pd.DataFrame(diagnostics.get("projected_public_ownership_by_week", [])),
+            [
+                "week",
+                "team",
+                "expected_public_picks",
+                "projected_ownership_pct",
+            ],
+        ),
+        "",
+        "## Scarcity Weeks",
+        "",
+        _markdown_table(
+            pd.DataFrame(diagnostics.get("public_field_scarcity_by_week", [])),
+            [
+                "week",
+                "expected_remaining_entries",
+                "average_available_teams",
+                "max_projected_ownership_pct",
+                "expected_chalk_concentration",
+                "scarcity_index",
+                "scarcity_spike",
+            ],
+        ),
+        "",
+        "## Path Uniqueness Diagnostics",
+        "",
+        _markdown_table(
+            result.expected_field_size_by_week,
+            [
+                "week",
+                "expected_public_overlap_entries",
+                "avg_path_overlap_pct",
+                "path_uniqueness_score",
+                "public_field_model",
             ],
         ),
         "",
@@ -260,6 +348,14 @@ def _markdown_table(df: pd.DataFrame, columns: list[str]) -> str:
             "cumulative_path_ev",
             "weekly_ev_delta",
             "fallback_coverage_pct",
+            "avg_path_overlap_pct",
+            "path_uniqueness_score",
+            "burned_pct",
+            "remaining_field_available_pct",
+            "remaining_field_used_pct",
+            "projected_ownership_pct",
+            "max_projected_ownership_pct",
+            "expected_chalk_concentration",
         }:
             if column in {
                 "path_ev",
@@ -293,6 +389,8 @@ def _markdown_table(df: pd.DataFrame, columns: list[str]) -> str:
             "selected_by_path_ev",
             "probability_source",
             "full_season_ev_reliability",
+            "public_field_model",
+            "scarcity_spike",
         }:
             table[column] = table[column].map(_format_number)
 
@@ -337,6 +435,12 @@ def _format_optional_pct(value: Any) -> str:
     if value is None or pd.isna(value):
         return "not applicable"
     return _format_pct(value)
+
+
+def _format_optional_count(value: Any) -> str:
+    if value is None or pd.isna(value):
+        return "not applicable"
+    return _format_number(value)
 
 
 def _format_equity_pct(value: Any) -> str:

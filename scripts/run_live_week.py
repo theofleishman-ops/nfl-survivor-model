@@ -27,6 +27,7 @@ from survivor.odds_providers.the_odds_api import TheOddsAPIProvider  # noqa: E40
 from survivor.path_ev import PATH_EV_HORIZONS  # noqa: E402
 from survivor.path_ev import (  # noqa: E402
     DEFAULT_FORWARD_TEAM_STRENGTH_SCALE,
+    DEFAULT_PUBLIC_FIELD_SAMPLE_SIZE,
     DEFAULT_TEAM_STRENGTH_HOME_FIELD_ADJUSTMENT,
 )
 
@@ -173,6 +174,12 @@ def _build_parser() -> argparse.ArgumentParser:
         help="Number of single-entry paths retained after each beam-search week.",
     )
     parser.add_argument(
+        "--public-field-sample-size",
+        type=int,
+        default=DEFAULT_PUBLIC_FIELD_SAMPLE_SIZE,
+        help="Weighted public entries sampled per path-EV simulation.",
+    )
+    parser.add_argument(
         "--top-k",
         type=int,
         default=LiveWeekOptions.top_k,
@@ -247,6 +254,7 @@ def _options_from_args(args: argparse.Namespace) -> LiveWeekOptions:
         aggregate_public_picks=not args.no_aggregate_public_picks,
         run_path_ev=args.run_path_ev,
         path_ev_simulations=args.path_ev_simulations,
+        public_field_sample_size=args.public_field_sample_size,
         beam_width=args.beam_width,
         top_k=args.top_k,
         path_ev_horizon=args.path_ev_horizon,
