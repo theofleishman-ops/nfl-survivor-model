@@ -5,7 +5,7 @@ from pathlib import Path
 import pandas as pd
 import pytest
 
-from survivor.loaders import load_season_data
+from survivor.loaders import load_season_data, load_team_strength_df
 from survivor.schemas import (
     validate_double_pick_weeks_df,
     validate_entries_df,
@@ -13,6 +13,7 @@ from survivor.schemas import (
     validate_pool_history_df,
     validate_public_picks_df,
     validate_schedule_df,
+    validate_team_strength_df,
 )
 
 
@@ -26,6 +27,7 @@ TEMPLATE_VALIDATORS = {
     "entries_template.csv": validate_entries_df,
     "pool_history_template.csv": validate_pool_history_df,
     "double_pick_weeks_template.csv": validate_double_pick_weeks_df,
+    "team_strength_template.csv": validate_team_strength_df,
 }
 
 SEASON_FILES = [
@@ -35,6 +37,7 @@ SEASON_FILES = [
     "entries.csv",
     "pool_history.csv",
     "double_pick_weeks.csv",
+    "team_strength.csv",
 ]
 
 
@@ -166,6 +169,31 @@ def test_load_season_data_works_with_copied_template_workspace(tmp_path):
     assert data["entries_df"]["active"].dtype == bool
     assert data["pool_history_df"] is not None
     assert data["double_pick_weeks_df"] is not None
+    assert data["team_strength_df"] is not None
+
+
+def test_load_team_strength_canonicalizes_and_validates_full_roster(tmp_path):
+    df = pd.read_csv(TEMPLATE_DIR / "team_strength_template.csv")
+    df.loc[df["team"] == "KC", "team"] = "Kansas City Chiefs"
+    path = tmp_path / "team_strength.csv"
+    df.to_csv(path, index=False)
+
+    loaded = load_team_strength_df(path)
+
+    assert len(loaded) == 32
+    assert loaded.loc[loaded["team"] == "KC", "rating"].iloc[0] == 0.50
+
+
+def test_team_strength_requires_numeric_rating_and_one_row_per_team():
+    df = pd.read_csv(TEMPLATE_DIR / "team_strength_template.csv")
+    df = df[df["team"] != "ARI"].copy()
+    df["rating"] = df["rating"].astype(object)
+    df.loc[df["team"] == "KC", "rating"] = "high"
+
+    errors = validate_team_strength_df(df)
+
+    assert any("rating" in error and "numeric" in error for error in errors)
+    assert any("missing: ARI" in error for error in errors)
 
 
 def test_load_season_data_rejects_non_joining_odds(tmp_path):

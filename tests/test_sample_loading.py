@@ -17,6 +17,7 @@ def test_sample_csv_files_have_rows():
         "public_picks_sample.csv",
         "entries_sample.csv",
         "pool_history_sample.csv",
+        "team_strength_sample.csv",
     ]
 
     for file_name in sample_files:

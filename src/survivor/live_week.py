@@ -19,6 +19,7 @@ from survivor.loaders import (
     load_odds_df,
     load_public_picks_df,
     load_schedule_df,
+    load_team_strength_df,
 )
 from survivor.odds import add_no_vig_probabilities
 from survivor.odds_ingestion import (
@@ -30,7 +31,9 @@ from survivor.odds_providers.the_odds_api import API_KEY_ENV_VAR, TheOddsAPIProv
 from survivor.optimizer import rank_weekly_picks
 from survivor.path_ev import (
     DEFAULT_BEAM_WIDTH,
+    DEFAULT_FORWARD_TEAM_STRENGTH_SCALE,
     DEFAULT_PATH_EV_HORIZON,
+    DEFAULT_TEAM_STRENGTH_HOME_FIELD_ADJUSTMENT,
     DEFAULT_TOP_K,
     SingleEntryPathOptimizationResult,
     optimize_single_entry_path,
@@ -80,6 +83,9 @@ class LiveWeekOptions:
     beam_width: int = DEFAULT_BEAM_WIDTH
     top_k: int = DEFAULT_TOP_K
     path_ev_horizon: str = DEFAULT_PATH_EV_HORIZON
+    team_strength_path: Path | None = None
+    team_strength_home_field_adjustment: float = DEFAULT_TEAM_STRENGTH_HOME_FIELD_ADJUSTMENT
+    team_strength_scale: float = DEFAULT_FORWARD_TEAM_STRENGTH_SCALE
     entry_fee: float | None = None
     prize_pool: float | None = None
     dry_run: bool = False
@@ -143,6 +149,7 @@ def run_live_week(
         provider_factory=odds_provider_factory,
     )
     model_odds_df = _model_odds_frame(odds_df)
+    path_ev_odds_df = _path_ev_odds_frame(odds_df)
     odds_status = _validate_week_odds(
         options=options,
         schedule_df=schedule_df,
@@ -246,10 +253,11 @@ def run_live_week(
     path_ev_report_path: Path | None = None
     if options.run_path_ev:
         used_teams = _single_entry_used_teams(entries_df, options.week)
+        team_strength_df = _load_team_strength(options, season_dir)
         try:
             path_ev_result = optimize_single_entry_path(
                 schedule_df=schedule_df,
-                odds_df=model_odds_df,
+                odds_df=path_ev_odds_df,
                 public_picks_df=public_picks_df,
                 start_week=options.week,
                 used_teams=used_teams,
@@ -261,6 +269,9 @@ def run_live_week(
                 entry_fee=options.entry_fee,
                 prize_pool=options.prize_pool,
                 path_ev_horizon=options.path_ev_horizon,
+                team_strength_df=team_strength_df,
+                team_strength_home_field_adjustment=options.team_strength_home_field_adjustment,
+                team_strength_scale=options.team_strength_scale,
             )
         except Exception as exc:
             raise LiveWeekWorkflowError(
@@ -529,6 +540,9 @@ def _path_ev_summary_lines(
         f"Best Pick: {pick['team']} over {pick['opponent']}",
         f"Horizon: {diagnostics.get('horizon', options.path_ev_horizon)}",
         f"Weeks Evaluated: {diagnostics.get('number_of_weeks_evaluated', len(result.best_path))}",
+        f"Full-Season EV Reliability: {diagnostics.get('full_season_ev_reliability', 'not_applicable')}",
+        f"Full-Season EV Actionability: {diagnostics.get('full_season_ev_actionability', 'not_applicable')}",
+        f"Fallback Coverage: {_format_optional_pct(diagnostics.get('fallback_coverage_pct'))}",
         f"Baseline Fair Value: {_format_money_or_not_provided(result.baseline_value)}",
         f"Path EV Estimate: {_format_equity_pct(result.best_path_ev)}",
         f"Path Survival Probability: {_format_rate_pct(result.path_survival_probability)}",
@@ -538,6 +552,10 @@ def _path_ev_summary_lines(
         ),
         f"Weeks With Real Odds: {_format_week_list(diagnostics.get('weeks_with_real_odds'))}",
         f"Weeks With Projected Odds: {_format_week_list(diagnostics.get('weeks_with_projected_odds'))}",
+        (
+            "Weeks With Projected Team Strength: "
+            f"{_format_week_list(diagnostics.get('weeks_with_projected_team_strength_probabilities'))}"
+        ),
         (
             "Weeks Using Fallback Probabilities: "
             f"{_format_week_list(diagnostics.get('weeks_using_fallback_probabilities'))}"
@@ -592,12 +610,19 @@ def _markdown_path_ev_summary_lines(
         f"- Best pick: {pick['team']} over {pick['opponent']}",
         f"- Horizon: {diagnostics.get('horizon', options.path_ev_horizon)}",
         f"- Weeks evaluated: {diagnostics.get('number_of_weeks_evaluated', len(result.best_path))}",
+        f"- Full-season EV reliability: {diagnostics.get('full_season_ev_reliability', 'not_applicable')}",
+        f"- Full-season EV actionability: {diagnostics.get('full_season_ev_actionability', 'not_applicable')}",
+        f"- Fallback coverage: {_format_optional_pct(diagnostics.get('fallback_coverage_pct'))}",
         f"- Baseline fair value: {_format_money_or_not_provided(result.baseline_value)}",
         f"- Path EV estimate: {_format_equity_pct(result.best_path_ev)}",
         f"- Path survival probability: {_format_rate_pct(result.path_survival_probability)}",
         f"- Expected final survivors if alive: {result.expected_survivors_if_alive:.2f}",
         f"- Weeks with real odds: {_format_week_list(diagnostics.get('weeks_with_real_odds'))}",
         f"- Weeks with projected odds: {_format_week_list(diagnostics.get('weeks_with_projected_odds'))}",
+        (
+            "- Weeks with projected team strength: "
+            f"{_format_week_list(diagnostics.get('weeks_with_projected_team_strength_probabilities'))}"
+        ),
         (
             "- Weeks using fallback probabilities: "
             f"{_format_week_list(diagnostics.get('weeks_using_fallback_probabilities'))}"
@@ -797,6 +822,17 @@ def _model_odds_frame(odds_df: pd.DataFrame) -> pd.DataFrame:
         return aggregated[
             aggregated["market_type"].astype(str).str.lower().isin(
                 {"h2h", "moneyline"},
+            )
+        ].copy()
+    return odds_df.copy()
+
+
+def _path_ev_odds_frame(odds_df: pd.DataFrame) -> pd.DataFrame:
+    if set(NORMALIZED_ODDS_COLUMNS).issubset(odds_df.columns):
+        aggregated = aggregate_book_odds(odds_df)
+        return aggregated[
+            aggregated["market_type"].astype(str).str.lower().isin(
+                {"h2h", "moneyline", "spreads", "spread"},
             )
         ].copy()
     return odds_df.copy()
@@ -1015,6 +1051,34 @@ def _load_entries(path: Path, options: LiveWeekOptions) -> pd.DataFrame:
         ) from exc
 
 
+def _load_team_strength(
+    options: LiveWeekOptions,
+    season_dir: Path,
+) -> pd.DataFrame | None:
+    team_strength_path = options.team_strength_path or (season_dir / "team_strength.csv")
+    if not team_strength_path.exists():
+        if options.team_strength_path is not None:
+            raise LiveWeekWorkflowError(
+                f"Team strength file not found: {team_strength_path}.",
+            )
+        return None
+    try:
+        strength = load_team_strength_df(team_strength_path)
+    except Exception as exc:
+        raise LiveWeekWorkflowError(
+            f"Team strength validation failed for {team_strength_path}:\n{exc}\n"
+            "How to fix: provide one numeric rating row per NFL team using "
+            "season, team, rating, source, and notes columns.",
+        ) from exc
+    if "season" in strength.columns:
+        strength = strength[strength["season"].astype(int) == int(options.season)].copy()
+    if strength.empty:
+        raise LiveWeekWorkflowError(
+            f"Team strength file has no rows for season {options.season}: {team_strength_path}.",
+        )
+    return strength
+
+
 def _schedule_with_available_odds(
     *,
     schedule_df: pd.DataFrame,
@@ -1045,6 +1109,16 @@ def _validate_options(options: LiveWeekOptions) -> None:
         raise LiveWeekWorkflowError("--entry-fee must be non-negative.")
     if options.prize_pool is not None and options.prize_pool < 0:
         raise LiveWeekWorkflowError("--prize-pool must be non-negative.")
+    try:
+        float(options.team_strength_home_field_adjustment)
+    except (TypeError, ValueError) as exc:
+        raise LiveWeekWorkflowError("--team-strength-home-field must be numeric.") from exc
+    try:
+        scale = float(options.team_strength_scale)
+    except (TypeError, ValueError) as exc:
+        raise LiveWeekWorkflowError("--team-strength-scale must be numeric.") from exc
+    if scale <= 0:
+        raise LiveWeekWorkflowError("--team-strength-scale must be positive.")
     if options.run_path_ev:
         if _effective_path_ev_simulations(options) <= 0:
             raise LiveWeekWorkflowError("--path-ev-simulations must be positive.")
@@ -1180,6 +1254,12 @@ def _format_optional_rate(value: object) -> str:
     if value is None or pd.isna(value):
         return "not applicable"
     return _format_rate_pct(float(value))
+
+
+def _format_optional_pct(value: object) -> str:
+    if value is None or pd.isna(value):
+        return "not applicable"
+    return f"{float(value):.1%}"
 
 
 def _format_equity_pct(value: float) -> str:
