@@ -69,8 +69,18 @@ def generate_weekly_candidates(
 
 def _ensure_team_level_odds(odds_df: pd.DataFrame) -> pd.DataFrame:
     if {"team", "opponent", "no_vig_win_probability"}.issubset(odds_df.columns):
-        return odds_df.copy()
-    return add_no_vig_probabilities(odds_df)
+        team_odds = odds_df.copy()
+    else:
+        team_odds = add_no_vig_probabilities(odds_df)
+
+    if "is_home" not in team_odds.columns and {"team", "home_team"}.issubset(
+        team_odds.columns,
+    ):
+        team_odds["is_home"] = (
+            team_odds["team"].astype(str).str.strip()
+            == team_odds["home_team"].astype(str).str.strip()
+        )
+    return team_odds
 
 
 def _normalize_public_picks(public_picks_df: pd.DataFrame) -> pd.DataFrame:

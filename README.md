@@ -16,8 +16,10 @@ real Week 1 fixture that exercises the real-data pipeline without private pool
 data. Phase 8 adds a provider-agnostic odds ingestion foundation for manual
 CSV/JSON imports and future API or plugin adapters. Phase 9 adds automated NFL
 odds import from The Odds API. Phase 10 adds provider-agnostic public pick
-ingestion for manual CSV/JSON ownership exports and consensus aggregation. It
-does not scrape websites or build a dashboard.
+ingestion for manual CSV/JSON ownership exports and consensus aggregation.
+Phase 11 adds a single-command live weekly workflow for validation, rankings,
+simulations, portfolio allocation, and markdown report indexing. It does not
+scrape websites or build a dashboard.
 
 The real 2026 schedule is included. No real odds, real pool data, secrets, API
 keys, raw API responses, or scraping code are included.
@@ -141,14 +143,12 @@ filled with rows matching that schedule:
 python scripts/validate_data_files.py --data-dir data/raw/2026
 ```
 
-Run the model against the real-data workspace once `odds.csv`,
+Run the live weekly workflow against the real-data workspace once `odds.csv`,
 `public_picks.csv`, and `entries.csv` have been filled with real contest data
 that matches the schedule game IDs:
 
 ```powershell
-python scripts/run_weekly_rankings.py --week 1 --season 2026 --data-dir data/raw
-python scripts/run_simulations.py --week 1 --season 2026 --data-dir data/raw --simulations 10000
-python scripts/run_portfolio_optimizer.py --week 1 --season 2026 --data-dir data/raw --entries 40
+python scripts/run_live_week.py --season 2026 --week 1
 ```
 
 The template files live in:
@@ -156,6 +156,66 @@ The template files live in:
 ```text
 data/raw/templates/
 ```
+
+## Live Weekly Workflow
+
+`scripts/run_live_week.py` is the operator-facing weekly command. It validates
+the schedule and current-week joins, optionally refreshes odds, optionally
+imports manual public-pick files, runs rankings, runs simulations, optimizes the
+entry portfolio, writes markdown reports, and prints a concise summary.
+
+Common runs:
+
+```powershell
+python scripts/run_live_week.py --season 2026 --week 1
+python scripts/run_live_week.py --season 2026 --week 1 --refresh-odds
+python scripts/run_live_week.py --season 2026 --week 1 --refresh-odds --simulations 10000 --entries 40
+```
+
+Dry-run validation and calculation without writing imported data or reports:
+
+```powershell
+python scripts/run_live_week.py --season 2026 --week 1 --dry-run --simulations 1000
+```
+
+The expected weekly process is:
+
+1. Update `data/raw/2026/entries.csv` with active entries and used teams.
+2. Refresh odds with `--refresh-odds`, or import odds separately with
+   `scripts/import_odds.py`.
+3. Import public picks with `--public-picks-input`, or import them separately
+   with `scripts/import_public_picks.py --aggregate`.
+4. Run `scripts/run_live_week.py` with the final simulation count, entry count,
+   and aggression mode.
+5. Review `outputs/reports/week_1_summary.md`, then the linked rankings,
+   simulation, and portfolio reports.
+
+Refresh odds through The Odds API:
+
+```powershell
+$env:THE_ODDS_API_KEY = "paste-your-api-key-here"
+python scripts/run_live_week.py --season 2026 --week 1 --refresh-odds --sportsbooks fanduel,draftkings,betmgm --markets h2h,spreads,totals
+```
+
+Import public picks as part of the live workflow:
+
+```powershell
+python scripts/run_live_week.py --season 2026 --week 1 --public-picks-input data/sample/public_pick_sources/yahoo_week1_public_picks.csv data/sample/public_pick_sources/espn_week1_public_picks.csv data/sample/public_pick_sources/survivorgrid_week1_public_picks.csv --public-picks-format csv
+```
+
+Generated reports:
+
+```text
+outputs/reports/week_1_summary.md
+outputs/reports/week_1_report.md
+outputs/reports/week_1_simulation_report.md
+outputs/reports/week_1_portfolio_report.md
+```
+
+The summary report is an index that links the rankings, simulation, and
+portfolio reports. The terminal summary calls out missing files, malformed
+game IDs, missing current-week odds, invalid probabilities, missing public
+picks, and missing API keys with a concrete fix.
 
 ## Odds Ingestion
 
@@ -557,6 +617,10 @@ and `totals` odds with environment-based secrets and mocked HTTP tests.
 Phase 10 public pick ingestion foundation: implemented for manual CSV/JSON
 ownership imports, source-aware schedule validation, provider interfaces, and
 simple or sample-size weighted consensus aggregation.
+
+Phase 11 live weekly workflow: implemented for one-command validation, optional
+odds refresh, optional public-pick import, rankings, simulations, portfolio
+optimization, operator summaries, and markdown report indexing.
 
 Future work: add ownership forecasting, more API adapters, optional scraper
 plugins, and an interactive dashboard without secrets, committed private data,
