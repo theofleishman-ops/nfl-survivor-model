@@ -4,6 +4,7 @@ from pathlib import Path
 
 import pandas as pd
 import pandas.testing as pdt
+import pytest
 
 from survivor.path_ev import (
     evaluate_path_ev,
@@ -161,6 +162,169 @@ def test_low_survival_pick_can_have_higher_dollar_ev():
     assert giants.expected_edge > 0
 
 
+def test_single_week_path_ev_uses_contest_equity_fraction_for_low_owned_upset():
+    schedule = pd.DataFrame(
+        [{"week": 1, "game_id": "NY", "home_team": "Jets", "away_team": "Giants"}],
+    )
+    odds = pd.DataFrame(
+        [
+            _odds_row(1, "NY", "Jets", "Giants", 0.80),
+            _odds_row(1, "NY", "Giants", "Jets", 0.20),
+        ],
+    )
+    public_picks = pd.DataFrame(
+        [
+            {"week": 1, "team": "Jets", "public_pick_pct": 0.90},
+            {"week": 1, "team": "Giants", "public_pick_pct": 0.10},
+        ],
+    )
+
+    result = evaluate_path_ev(
+        pd.DataFrame([{"week": 1, "team": "Giants"}]),
+        schedule,
+        odds,
+        public_picks,
+        pool_size=10,
+        simulations=10,
+        random_seed=1,
+        entry_fee=10,
+        prize_pool=100,
+    )
+
+    assert result.path_ev == pytest.approx(0.20)
+    assert result.ev_dollars == pytest.approx(20.0)
+    assert result.ev_multiple == pytest.approx(2.0)
+    assert result.expected_edge == pytest.approx(1.0)
+    assert result.baseline_value == pytest.approx(10.0)
+    assert result.ev_multiple_vs_baseline == pytest.approx(2.0)
+    assert result.expected_edge_vs_baseline == pytest.approx(1.0)
+
+
+def test_single_week_path_ev_denominator_uses_outcome_state_survivor_counts():
+    schedule = pd.DataFrame(
+        [
+            {"week": 1, "game_id": "NY", "home_team": "Jets", "away_team": "Giants"},
+            {"week": 1, "game_id": "KC", "home_team": "Chiefs", "away_team": "Chargers"},
+        ],
+    )
+    odds = pd.DataFrame(
+        [
+            _odds_row(1, "NY", "Jets", "Giants", 0.80),
+            _odds_row(1, "NY", "Giants", "Jets", 0.20),
+            _odds_row(1, "KC", "Chiefs", "Chargers", 0.50),
+            _odds_row(1, "KC", "Chargers", "Chiefs", 0.50),
+        ],
+    )
+    public_picks = pd.DataFrame(
+        [
+            {"week": 1, "team": "Jets", "public_pick_pct": 0.50},
+            {"week": 1, "team": "Giants", "public_pick_pct": 0.10},
+            {"week": 1, "team": "Chiefs", "public_pick_pct": 0.30},
+            {"week": 1, "team": "Chargers", "public_pick_pct": 0.10},
+        ],
+    )
+
+    result = evaluate_path_ev(
+        pd.DataFrame([{"week": 1, "team": "Chargers"}]),
+        schedule,
+        odds,
+        public_picks,
+        pool_size=10,
+        simulations=20000,
+        random_seed=7,
+        entry_fee=10,
+        prize_pool=100,
+    )
+
+    assert result.ev_dollars == pytest.approx(11.67, abs=0.15)
+    assert result.ev_multiple == pytest.approx(1.167, abs=0.015)
+    assert result.expected_edge == pytest.approx(0.167, abs=0.015)
+
+
+def test_symmetric_random_entry_ev_is_baseline_fair_value():
+    schedule = pd.DataFrame(
+        [
+            {"week": 1, "game_id": "G1", "home_team": "A", "away_team": "B"},
+            {"week": 1, "game_id": "G2", "home_team": "C", "away_team": "D"},
+        ],
+    )
+    odds = pd.DataFrame(
+        [
+            _odds_row(1, "G1", "A", "B", 0.50),
+            _odds_row(1, "G1", "B", "A", 0.50),
+            _odds_row(1, "G2", "C", "D", 0.50),
+            _odds_row(1, "G2", "D", "C", 0.50),
+        ],
+    )
+    public_picks = pd.DataFrame(
+        [
+            {"week": 1, "team": "A", "public_pick_pct": 0.25},
+            {"week": 1, "team": "B", "public_pick_pct": 0.25},
+            {"week": 1, "team": "C", "public_pick_pct": 0.25},
+            {"week": 1, "team": "D", "public_pick_pct": 0.25},
+        ],
+    )
+
+    result = evaluate_path_ev(
+        pd.DataFrame([{"week": 1, "team": "A"}]),
+        schedule,
+        odds,
+        public_picks,
+        pool_size=10,
+        simulations=2000,
+        random_seed=42,
+        entry_fee=10,
+        prize_pool=100,
+    )
+
+    assert result.baseline_value == pytest.approx(10.0)
+    assert result.ev_dollars == pytest.approx(10.0, abs=0.05)
+    assert result.ev_multiple_vs_baseline == pytest.approx(1.0, abs=0.005)
+    assert result.expected_edge_vs_baseline == pytest.approx(0.0, abs=0.005)
+
+
+def test_available_odds_horizon_ignores_future_fallback_weeks_for_toy_optimizer():
+    schedule = pd.DataFrame(
+        [
+            {"week": 1, "game_id": "NY", "home_team": "Jets", "away_team": "Giants"},
+            {"week": 2, "game_id": "KC", "home_team": "Chiefs", "away_team": "Raiders"},
+        ],
+    )
+    odds = pd.DataFrame(
+        [
+            _odds_row(1, "NY", "Jets", "Giants", 0.80),
+            _odds_row(1, "NY", "Giants", "Jets", 0.20),
+        ],
+    )
+    public_picks = pd.DataFrame(
+        [
+            {"week": 1, "team": "Jets", "public_pick_pct": 0.90},
+            {"week": 1, "team": "Giants", "public_pick_pct": 0.10},
+        ],
+    )
+
+    result = optimize_single_entry_path(
+        schedule,
+        odds,
+        public_picks,
+        start_week=1,
+        pool_size=10,
+        simulations=200,
+        random_seed=5,
+        top_k=2,
+        beam_width=4,
+        entry_fee=10,
+        prize_pool=100,
+        path_ev_horizon="available",
+    )
+
+    assert result.best_path["week"].tolist() == [1]
+    assert result.best_path.iloc[0]["team"] == "Giants"
+    assert result.ev_dollars == pytest.approx(20.0)
+    assert result.ev_multiple_vs_baseline == pytest.approx(2.0)
+    assert result.diagnostics["weeks_using_fallback_probabilities"] == []
+
+
 def test_repeated_seed_is_deterministic():
     schedule = _multiweek_schedule()
     odds = _multiweek_odds()
@@ -223,9 +387,33 @@ def test_report_generation(tmp_path):
 
     assert "Single-Entry Path EV" in report
     assert "EV dollars" in report
-    assert "EV multiple" in report
+    assert "EV multiple vs entry fee" in report
+    assert "EV multiple vs baseline fair value" in report
+    assert "Horizon Comparison" in report
     assert "Heuristic Ranking Comparison" in report
     assert "Assumptions" in report_path.read_text(encoding="utf-8")
+
+
+def test_report_does_not_invent_money_metrics_without_value_inputs():
+    result = optimize_single_entry_path(
+        _multiweek_schedule(),
+        _multiweek_odds(),
+        _multiweek_public_picks(),
+        start_week=1,
+        pool_size=250,
+        simulations=300,
+        random_seed=3,
+        top_k=2,
+        beam_width=4,
+    )
+
+    report = build_single_entry_path_ev_report(result, week=1)
+
+    assert "EV dollars: not provided" in report
+    assert "EV multiple vs entry fee: not provided" in report
+    assert "EV multiple vs baseline fair value: not provided" in report
+    assert "$0.00" not in report
+    assert "0.000x" not in report
 
 
 def test_single_entry_optimizer_cli_smoke(tmp_path):

@@ -24,6 +24,7 @@ from survivor.live_week import (  # noqa: E402
     run_live_week,
 )
 from survivor.odds_providers.the_odds_api import TheOddsAPIProvider  # noqa: E402
+from survivor.path_ev import PATH_EV_HORIZONS  # noqa: E402
 
 
 def main(
@@ -174,6 +175,15 @@ def _build_parser() -> argparse.ArgumentParser:
         help="Weekly candidates expanded per path in the path EV optimizer.",
     )
     parser.add_argument(
+        "--path-ev-horizon",
+        choices=PATH_EV_HORIZONS,
+        default=LiveWeekOptions.path_ev_horizon,
+        help=(
+            "Path EV evaluation horizon. Defaults to consecutive weeks with "
+            "real odds available."
+        ),
+    )
+    parser.add_argument(
         "--entry-fee",
         type=float,
         default=None,
@@ -217,6 +227,7 @@ def _options_from_args(args: argparse.Namespace) -> LiveWeekOptions:
         path_ev_simulations=args.path_ev_simulations,
         beam_width=args.beam_width,
         top_k=args.top_k,
+        path_ev_horizon=args.path_ev_horizon,
         entry_fee=args.entry_fee,
         prize_pool=args.prize_pool,
         dry_run=args.dry_run,
