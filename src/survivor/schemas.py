@@ -172,6 +172,35 @@ POOL_HISTORY_SCHEMA = CsvSchema(
     },
 )
 
+POOL_HISTORY_CALIBRATION_SCHEMA = CsvSchema(
+    required_columns=(
+        "season",
+        "week",
+        "pool_size_start",
+        "pool_size_end",
+        "top_pick_team",
+        "top_pick_pct",
+        "second_pick_team",
+        "second_pick_pct",
+        "third_pick_team",
+        "third_pick_pct",
+        "notes",
+    ),
+    column_types={
+        "season": "positive integer",
+        "week": "positive integer",
+        "pool_size_start": "non-negative integer",
+        "pool_size_end": "non-negative integer",
+        "top_pick_team": "most popular pick team",
+        "top_pick_pct": "decimal from 0 to 1",
+        "second_pick_team": "second most popular pick team",
+        "second_pick_pct": "decimal from 0 to 1",
+        "third_pick_team": "third most popular pick team",
+        "third_pick_pct": "decimal from 0 to 1",
+        "notes": "optional free-text notes",
+    },
+)
+
 DOUBLE_PICK_WEEKS_SCHEMA = CsvSchema(
     required_columns=("week", "required_picks"),
     optional_columns=("note",),
@@ -201,6 +230,7 @@ DATASET_SCHEMAS = {
     "entries": ENTRIES_SCHEMA,
     "entries_history": ENTRIES_HISTORY_SCHEMA,
     "pool_history": POOL_HISTORY_SCHEMA,
+    "pool_history_calibration": POOL_HISTORY_CALIBRATION_SCHEMA,
     "double_pick_weeks": DOUBLE_PICK_WEEKS_SCHEMA,
     "team_strength": TEAM_STRENGTH_SCHEMA,
 }
@@ -554,6 +584,56 @@ def validate_pool_history_df(df: pd.DataFrame) -> list[str]:
     )
     _validate_entries_survived_not_greater_than_start(df, errors)
     _validate_duplicates(df, ["season", "week"], "pool_history", errors)
+    return errors
+
+
+def validate_pool_history_calibration_df(df: pd.DataFrame) -> list[str]:
+    """Return validation errors for future public-behavior calibration history."""
+
+    errors: list[str] = []
+    required = POOL_HISTORY_CALIBRATION_SCHEMA.required_columns
+    _validate_required_columns(df, required, "pool_history_calibration", errors)
+    _validate_required_values(
+        df,
+        (
+            "season",
+            "week",
+            "pool_size_start",
+            "pool_size_end",
+            "top_pick_team",
+            "top_pick_pct",
+            "second_pick_team",
+            "second_pick_pct",
+            "third_pick_team",
+            "third_pick_pct",
+        ),
+        "pool_history_calibration",
+        errors,
+    )
+    _validate_positive_integer_column(df, "season", "pool_history_calibration", errors)
+    _validate_positive_integer_column(df, "week", "pool_history_calibration", errors)
+    _validate_non_negative_integer_column(
+        df,
+        "pool_size_start",
+        "pool_history_calibration",
+        errors,
+    )
+    _validate_non_negative_integer_column(
+        df,
+        "pool_size_end",
+        "pool_history_calibration",
+        errors,
+    )
+    _validate_team_alias_columns(
+        df,
+        ["top_pick_team", "second_pick_team", "third_pick_team"],
+        "pool_history_calibration",
+        errors,
+    )
+    for column in ("top_pick_pct", "second_pick_pct", "third_pick_pct"):
+        _validate_probability_column(df, column, "pool_history_calibration", errors)
+    _validate_pool_history_calibration_counts(df, errors)
+    _validate_duplicates(df, ["season", "week"], "pool_history_calibration", errors)
     return errors
 
 
@@ -1180,6 +1260,25 @@ def _validate_entries_survived_not_greater_than_start(
         errors.append(
             "pool_history entries_survived cannot exceed entries_start on rows "
             f"{_format_rows(invalid)}."
+        )
+
+
+def _validate_pool_history_calibration_counts(
+    df: pd.DataFrame,
+    errors: list[str],
+) -> None:
+    columns = {"pool_size_start", "pool_size_end"}
+    if not columns.issubset(df.columns):
+        return
+
+    start = pd.to_numeric(df["pool_size_start"], errors="coerce")
+    end = pd.to_numeric(df["pool_size_end"], errors="coerce")
+    valid_numeric = start.notna() & end.notna()
+    invalid = valid_numeric & (end > start)
+    if bool(invalid.any()):
+        errors.append(
+            "pool_history_calibration pool_size_end cannot exceed pool_size_start "
+            f"on rows {_format_rows(invalid)}."
         )
 
 

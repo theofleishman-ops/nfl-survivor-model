@@ -1,0 +1,2 @@
+season,week,pool_size_start,pool_size_end,top_pick_team,top_pick_pct,second_pick_team,second_pick_pct,third_pick_team,third_pick_pct,notes
+2026,1,5000,3125,KC,0.38,PHI,0.21,BUF,0.12,Synthetic example row for future public behavior calibration

@@ -21,6 +21,11 @@ from survivor.public_field import (
     PublicFieldSimulationResult,
     simulate_public_field_paths,
 )
+from survivor.public_behavior import (
+    PublicBehaviorConfig,
+    TEAM_POPULARITY_BIAS,
+    resolve_public_behavior_config,
+)
 from survivor.team_strength import build_team_strength_priors
 from survivor.win_probability import (
     DEFAULT_TEAM_STRENGTH_SCALE,
@@ -56,27 +61,7 @@ PROJECTED_PROBABILITY_SOURCES = frozenset(
 FALLBACK_PROBABILITY_SOURCES = frozenset({PROBABILITY_SOURCE_FALLBACK_DEFAULT})
 PROJECTED_PUBLIC_PICK_SOURCE = "projected_ownership"
 
-TEAM_POPULARITY_PLACEHOLDER = {
-    "DAL": 1.35,
-    "KC": 1.25,
-    "GB": 1.18,
-    "PIT": 1.18,
-    "SF": 1.18,
-    "PHI": 1.16,
-    "BUF": 1.14,
-    "CHI": 1.10,
-    "LV": 1.10,
-    "NYG": 1.10,
-    "NYJ": 1.10,
-    "LAR": 1.08,
-    "MIA": 1.08,
-    "NE": 1.08,
-    "DET": 1.06,
-    "BAL": 1.05,
-    "CIN": 1.05,
-    "MIN": 1.05,
-    "SEA": 1.05,
-}
+TEAM_POPULARITY_PLACEHOLDER = TEAM_POPULARITY_BIAS
 
 PATH_COLUMNS = [
     "path_id",
@@ -207,6 +192,7 @@ def build_forward_game_probabilities(
     team_strength_df: pd.DataFrame | None = None,
     team_strength_home_field_adjustment: float = DEFAULT_TEAM_STRENGTH_HOME_FIELD_ADJUSTMENT,
     team_strength_scale: float = DEFAULT_FORWARD_TEAM_STRENGTH_SCALE,
+    public_behavior_config: PublicBehaviorConfig | str | None = None,
 ) -> pd.DataFrame:
     """Build team-level win and ownership projections for every scheduled game.
 
@@ -225,6 +211,7 @@ def build_forward_game_probabilities(
     return _add_projected_public_picks(
         team_probabilities,
         _normalize_public_picks(_as_dataframe(public_picks_df)),
+        behavior_config=public_behavior_config,
     )
 
 
@@ -242,6 +229,7 @@ def generate_candidate_paths(
     team_strength_df: pd.DataFrame | None = None,
     team_strength_home_field_adjustment: float = DEFAULT_TEAM_STRENGTH_HOME_FIELD_ADJUSTMENT,
     team_strength_scale: float = DEFAULT_FORWARD_TEAM_STRENGTH_SCALE,
+    public_behavior_config: PublicBehaviorConfig | str | None = None,
 ) -> pd.DataFrame:
     """Generate fixed survivor paths with a controlled beam search.
 
@@ -264,6 +252,7 @@ def generate_candidate_paths(
         team_strength_df=team_strength_df,
         team_strength_home_field_adjustment=team_strength_home_field_adjustment,
         team_strength_scale=team_strength_scale,
+        public_behavior_config=public_behavior_config,
     )
     weeks = _resolve_horizon_weeks(model, start_week, path_ev_horizon)
     if not weeks:
@@ -354,6 +343,7 @@ def evaluate_path_ev(
     team_strength_scale: float = DEFAULT_FORWARD_TEAM_STRENGTH_SCALE,
     use_public_field_simulation: bool = DEFAULT_USE_PUBLIC_FIELD_SIMULATION,
     public_field_sample_size: int | None = DEFAULT_PUBLIC_FIELD_SAMPLE_SIZE,
+    public_behavior_config: PublicBehaviorConfig | str | None = None,
 ) -> PathEVResult:
     """Evaluate a single fixed path using Monte Carlo contest equity."""
     _validate_positive_int("pool_size", pool_size)
@@ -380,6 +370,7 @@ def evaluate_path_ev(
         team_strength_df=team_strength_df,
         team_strength_home_field_adjustment=team_strength_home_field_adjustment,
         team_strength_scale=team_strength_scale,
+        public_behavior_config=public_behavior_config,
     )
     prepared_path = _prepare_paths_for_evaluation(path, model.team_probabilities)
     weeks = sorted(prepared_path["week"].astype(int).unique().tolist())
@@ -391,6 +382,7 @@ def evaluate_path_ev(
         random_seed=random_seed,
         use_public_field_simulation=use_public_field_simulation,
         public_field_sample_size=public_field_sample_size,
+        public_behavior_config=public_behavior_config,
     )
     evaluated, survival_by_week, field_by_week = _evaluate_prepared_paths(
         paths=prepared_path,
@@ -479,6 +471,7 @@ def optimize_single_entry_path(
     team_strength_scale: float = DEFAULT_FORWARD_TEAM_STRENGTH_SCALE,
     use_public_field_simulation: bool = DEFAULT_USE_PUBLIC_FIELD_SIMULATION,
     public_field_sample_size: int | None = DEFAULT_PUBLIC_FIELD_SAMPLE_SIZE,
+    public_behavior_config: PublicBehaviorConfig | str | None = None,
 ) -> SingleEntryPathOptimizationResult:
     """Find the single-entry path with the highest simulated contest equity."""
     _validate_positive_int("simulations", simulations)
@@ -499,6 +492,7 @@ def optimize_single_entry_path(
         team_strength_df=team_strength_df,
         team_strength_home_field_adjustment=team_strength_home_field_adjustment,
         team_strength_scale=team_strength_scale,
+        public_behavior_config=public_behavior_config,
     )
     if candidate_paths.empty:
         raise ValueError("No candidate paths were generated.")
@@ -512,6 +506,7 @@ def optimize_single_entry_path(
         team_strength_df=team_strength_df,
         team_strength_home_field_adjustment=team_strength_home_field_adjustment,
         team_strength_scale=team_strength_scale,
+        public_behavior_config=public_behavior_config,
     )
     prepared_paths = _prepare_paths_for_evaluation(candidate_paths, model.team_probabilities)
     weeks = sorted(prepared_paths["week"].astype(int).unique().tolist())
@@ -524,6 +519,7 @@ def optimize_single_entry_path(
         random_seed=random_seed,
         use_public_field_simulation=use_public_field_simulation,
         public_field_sample_size=public_field_sample_size,
+        public_behavior_config=public_behavior_config,
     )
     evaluated_paths, survival_by_week, field_by_week = _evaluate_prepared_paths(
         paths=prepared_paths,
@@ -584,6 +580,7 @@ def optimize_single_entry_path(
         prize_pool=prize_pool,
         use_public_field_simulation=use_public_field_simulation,
         public_field_sample_size=public_field_sample_size,
+        public_behavior_config=public_behavior_config,
         primary_summary=best.to_dict(),
     )
 
@@ -628,6 +625,7 @@ def _prepare_path_model_data(
     team_strength_df: pd.DataFrame | None = None,
     team_strength_home_field_adjustment: float = DEFAULT_TEAM_STRENGTH_HOME_FIELD_ADJUSTMENT,
     team_strength_scale: float = DEFAULT_FORWARD_TEAM_STRENGTH_SCALE,
+    public_behavior_config: PublicBehaviorConfig | str | None = None,
 ) -> _PathModelData:
     schedule = _prepare_schedule(schedule_df)
     team_probabilities = _prepare_team_probabilities(
@@ -640,6 +638,7 @@ def _prepare_path_model_data(
     team_probabilities = _add_projected_public_picks(
         team_probabilities,
         _normalize_public_picks(_as_dataframe(public_picks_df)),
+        behavior_config=public_behavior_config,
     )
     public_picks = team_probabilities[
         ["week", "team", "projected_public_pick_pct"]
@@ -817,6 +816,7 @@ def _public_field_diagnostics(
         return {
             "public_field_model": "independent_weekly_ownership",
             "public_field_path_simulation_enabled": False,
+            "public_behavior_preset": None,
             "public_field_sample_size": None,
             "public_field_entry_weight": None,
             "expected_remaining_field_by_week": [],
@@ -859,6 +859,23 @@ def _public_field_diagnostics(
     return {
         "public_field_model": PUBLIC_FIELD_PICK_SOURCE,
         "public_field_path_simulation_enabled": True,
+        "public_behavior_preset": public_field.diagnostics.get("public_behavior_preset"),
+        "public_behavior_description": public_field.diagnostics.get(
+            "public_behavior_description",
+        ),
+        "public_behavior_config": {
+            key: public_field.diagnostics.get(key)
+            for key in [
+                "chalkiness",
+                "future_awareness",
+                "randomness",
+                "popularity_weight",
+                "scarcity_weight",
+                "contrarian_rate",
+                "max_single_team_ownership",
+                "ownership_temperature",
+            ]
+        },
         "public_field_sample_size": int(public_field.sample_entry_count),
         "public_field_entry_weight": float(public_field.entry_weight),
         "expected_remaining_field_by_week": _records_for_columns(
@@ -952,6 +969,7 @@ def _build_horizon_comparison(
     prize_pool: float | None,
     use_public_field_simulation: bool,
     public_field_sample_size: int | None,
+    public_behavior_config: PublicBehaviorConfig | str | None,
     primary_summary: dict[str, Any],
 ) -> list[dict[str, Any]]:
     path_weeks = set(path["week"].astype(int).tolist())
@@ -994,6 +1012,7 @@ def _build_horizon_comparison(
                 prize_pool=prize_pool,
                 use_public_field_simulation=use_public_field_simulation,
                 public_field_sample_size=public_field_sample_size,
+                public_behavior_config=public_behavior_config,
             )
         coverage = _fallback_coverage(path[path["week"].astype(int).isin(set(weeks))])
         rows.append(_horizon_row(label, horizon, weeks, summary, coverage))
@@ -1012,6 +1031,7 @@ def _evaluate_path_for_weeks(
     prize_pool: float | None,
     use_public_field_simulation: bool,
     public_field_sample_size: int | None,
+    public_behavior_config: PublicBehaviorConfig | str | None,
 ) -> dict[str, Any]:
     subset = path[path["week"].astype(int).isin(set(weeks))].copy()
     prepared = _prepare_paths_for_evaluation(subset, model.team_probabilities)
@@ -1023,6 +1043,7 @@ def _evaluate_path_for_weeks(
         random_seed=random_seed,
         use_public_field_simulation=use_public_field_simulation,
         public_field_sample_size=public_field_sample_size,
+        public_behavior_config=public_behavior_config,
     )
     evaluated, _, _ = _evaluate_prepared_paths(
         paths=prepared,
@@ -1444,7 +1465,10 @@ def _normalize_game_probabilities(probabilities: pd.DataFrame) -> pd.DataFrame:
 def _add_projected_public_picks(
     team_probabilities: pd.DataFrame,
     public_picks_df: pd.DataFrame,
+    *,
+    behavior_config: PublicBehaviorConfig | str | None,
 ) -> pd.DataFrame:
+    public_behavior = _resolve_projection_behavior_config(behavior_config)
     output = team_probabilities.copy()
     output["projected_public_pick_pct"] = 0.0
     output["public_pick_source"] = PROJECTED_PUBLIC_PICK_SOURCE
@@ -1454,6 +1478,7 @@ def _add_projected_public_picks(
         .map(TEAM_POPULARITY_PLACEHOLDER)
         .fillna(1.0)
         .astype(float)
+        ** float(public_behavior.popularity_weight)
     )
     output["week_alternative_scarcity"] = 0.0
     output["ownership_projection_weight"] = 0.0
@@ -1493,16 +1518,106 @@ def _add_projected_public_picks(
             .map(TEAM_POPULARITY_PLACEHOLDER)
             .fillna(1.0)
             .astype(float)
+            ** float(public_behavior.popularity_weight)
         )
-        exponent = 2.0 + 2.0 * scarcity
-        favorite_boost = np.where(probabilities >= 0.70, 1.0 + 0.50 * scarcity, 1.0)
+        exponent = max(
+            0.25,
+            float(public_behavior.chalkiness)
+            + float(public_behavior.scarcity_weight) * scarcity,
+        )
+        favorite_boost = np.where(
+            probabilities >= 0.70,
+            1.0 + float(public_behavior.scarcity_weight) * 0.50 * scarcity,
+            1.0,
+        )
         weights = (probabilities**exponent) * popularity * favorite_boost
         total_weight = float(weights.sum())
-        projected = weights / total_weight if total_weight > 0 else np.full(len(week_df), 1 / len(week_df))
+        projected = (
+            weights / total_weight
+            if total_weight > 0
+            else np.full(len(week_df), 1 / len(week_df))
+        )
+        projected = _shape_projected_ownership(projected, public_behavior)
         output.loc[week_df.index, "projected_public_pick_pct"] = projected
         output.loc[week_df.index, "ownership_projection_weight"] = weights
 
     return output
+
+
+def _resolve_projection_behavior_config(
+    behavior_config: PublicBehaviorConfig | str | None,
+) -> PublicBehaviorConfig:
+    if behavior_config is not None:
+        return resolve_public_behavior_config(behavior_config)
+    return PublicBehaviorConfig(
+        name="legacy_projected_ownership",
+        description=(
+            "Backwards-compatible future ownership projection used before "
+            "public behavior calibration presets."
+        ),
+        chalkiness=2.0,
+        randomness=0.0,
+        future_awareness=0.20,
+        popularity_weight=1.0,
+        scarcity_weight=2.0,
+        contrarian_rate=0.0,
+        max_single_team_ownership=1.0,
+        ownership_temperature=1.0,
+    )
+
+
+def _shape_projected_ownership(
+    values: pd.Series | np.ndarray,
+    public_behavior: PublicBehaviorConfig,
+) -> np.ndarray:
+    probabilities = np.asarray(values, dtype=float)
+    if probabilities.size == 0:
+        return probabilities
+    total = float(probabilities.sum())
+    probabilities = (
+        probabilities / total
+        if total > 0
+        else np.full(probabilities.size, 1.0 / float(probabilities.size))
+    )
+    temperature = float(public_behavior.ownership_temperature)
+    if temperature != 1.0:
+        probabilities = probabilities ** (1.0 / temperature)
+        temperature_total = float(probabilities.sum())
+        probabilities = (
+            probabilities / temperature_total
+            if temperature_total > 0
+            else np.full(probabilities.size, 1.0 / float(probabilities.size))
+        )
+    cap = float(public_behavior.max_single_team_ownership)
+    if cap < 1.0:
+        probabilities = _cap_projected_ownership(probabilities, cap)
+    randomness = float(public_behavior.randomness)
+    if randomness > 0:
+        uniform = np.full(probabilities.size, 1.0 / float(probabilities.size))
+        probabilities = (1.0 - randomness) * probabilities + randomness * uniform
+    total = float(probabilities.sum())
+    return probabilities / total if total > 0 else probabilities
+
+
+def _cap_projected_ownership(probabilities: np.ndarray, cap: float) -> np.ndarray:
+    effective_cap = max(float(cap), 1.0 / float(probabilities.size))
+    capped = np.asarray(probabilities, dtype=float).copy()
+    for _ in range(probabilities.size + 1):
+        over = capped > effective_cap
+        if not bool(over.any()):
+            break
+        excess = float((capped[over] - effective_cap).sum())
+        capped[over] = effective_cap
+        under = ~over
+        if not bool(under.any()) or excess <= 0:
+            break
+        capacity = np.maximum(effective_cap - capped[under], 0.0)
+        capacity_total = float(capacity.sum())
+        if capacity_total <= 0:
+            break
+        capped[under] = capped[under] + excess * capacity / capacity_total
+    total = float(capped.sum())
+    return capped / total if total > 0 else capped
 
 
 def _week_alternative_scarcity(win_probabilities: pd.Series) -> float:
@@ -1695,6 +1810,7 @@ def _simulate_common_seasons(
     random_seed: int | None,
     use_public_field_simulation: bool,
     public_field_sample_size: int | None,
+    public_behavior_config: PublicBehaviorConfig | str | None,
 ) -> _CommonSimulation:
     rng = np.random.default_rng(random_seed)
     team_wins: dict[tuple[int, str], np.ndarray] = {}
@@ -1732,6 +1848,7 @@ def _simulate_common_seasons(
             simulations=simulations,
             random_seed=random_seed,
             public_field_sample_size=public_field_sample_size,
+            behavior_config=public_behavior_config,
             team_probabilities_df=model.team_probabilities,
             weeks=weeks,
             include_entry_paths=False,

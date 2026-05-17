@@ -14,6 +14,13 @@ from typing import Any
 import numpy as np
 import pandas as pd
 
+from survivor.public_behavior import (
+    PublicBehaviorConfig,
+    TEAM_POPULARITY_BIAS,
+    public_behavior_from_legacy,
+    resolve_public_behavior_config,
+)
+
 
 DEFAULT_PUBLIC_FIELD_SAMPLE_SIZE = 400
 DEFAULT_PUBLIC_CHALKINESS = 3.0
@@ -21,28 +28,6 @@ DEFAULT_PUBLIC_FUTURE_AWARENESS = 0.20
 DEFAULT_PUBLIC_RANDOMNESS = 0.08
 
 PUBLIC_FIELD_PICK_SOURCE = "public_field_path_simulation"
-
-TEAM_POPULARITY_BIAS = {
-    "DAL": 1.35,
-    "KC": 1.25,
-    "GB": 1.18,
-    "PIT": 1.18,
-    "SF": 1.18,
-    "PHI": 1.16,
-    "BUF": 1.14,
-    "CHI": 1.10,
-    "LV": 1.10,
-    "NYG": 1.10,
-    "NYJ": 1.10,
-    "LAR": 1.08,
-    "MIA": 1.08,
-    "NE": 1.08,
-    "DET": 1.06,
-    "BAL": 1.05,
-    "CIN": 1.05,
-    "MIN": 1.05,
-    "SEA": 1.05,
-}
 
 
 @dataclass(frozen=True)
@@ -96,6 +81,7 @@ def simulate_public_field_paths(
     chalkiness: float = DEFAULT_PUBLIC_CHALKINESS,
     future_awareness: float = DEFAULT_PUBLIC_FUTURE_AWARENESS,
     randomness: float = DEFAULT_PUBLIC_RANDOMNESS,
+    behavior_config: PublicBehaviorConfig | str | None = None,
     team_probabilities_df: pd.DataFrame | None = None,
     weeks: list[int] | tuple[int, ...] | None = None,
     include_entry_paths: bool = True,
@@ -111,7 +97,8 @@ def simulate_public_field_paths(
     _validate_positive_int("simulations", simulations)
     if public_field_sample_size is not None:
         _validate_positive_int("public_field_sample_size", public_field_sample_size)
-    _validate_behavior_parameters(
+    public_behavior = _resolve_behavior_config(
+        behavior_config,
         chalkiness=chalkiness,
         future_awareness=future_awareness,
         randomness=randomness,
@@ -123,6 +110,7 @@ def simulate_public_field_paths(
         public_picks_df=public_picks_df,
         projected_team_strength=projected_team_strength,
         team_probabilities_df=team_probabilities_df,
+        behavior_config=public_behavior,
     )
     selected_weeks = _resolve_weeks(team_probabilities, start_week, weeks)
     team_probabilities = team_probabilities[
@@ -151,9 +139,7 @@ def simulate_public_field_paths(
         simulations=simulations,
         sample_entries=sample_entries,
         rng=rng,
-        chalkiness=chalkiness,
-        future_awareness=future_awareness,
-        randomness=randomness,
+        behavior_config=public_behavior,
     )
     entry_weight = float(pool_size) / float(sample_entries)
     summaries = _summarize_public_field(
@@ -170,9 +156,16 @@ def simulate_public_field_paths(
         "entry_weight": float(entry_weight),
         "start_week": int(min(selected_weeks)),
         "end_week": int(max(selected_weeks)),
-        "chalkiness": float(chalkiness),
-        "future_awareness": float(future_awareness),
-        "randomness": float(randomness),
+        "public_behavior_preset": public_behavior.name,
+        "public_behavior_description": public_behavior.description,
+        "chalkiness": float(public_behavior.chalkiness),
+        "future_awareness": float(public_behavior.future_awareness),
+        "randomness": float(public_behavior.randomness),
+        "popularity_weight": float(public_behavior.popularity_weight),
+        "scarcity_weight": float(public_behavior.scarcity_weight),
+        "contrarian_rate": float(public_behavior.contrarian_rate),
+        "max_single_team_ownership": float(public_behavior.max_single_team_ownership),
+        "ownership_temperature": float(public_behavior.ownership_temperature),
     }
 
     return PublicFieldSimulationResult(
@@ -206,9 +199,11 @@ def generate_public_entry_path(
     chalkiness: float = DEFAULT_PUBLIC_CHALKINESS,
     future_awareness: float = DEFAULT_PUBLIC_FUTURE_AWARENESS,
     randomness: float = DEFAULT_PUBLIC_RANDOMNESS,
+    behavior_config: PublicBehaviorConfig | str | None = None,
 ) -> pd.DataFrame:
     """Generate one public entry's planned pick path."""
-    _validate_behavior_parameters(
+    public_behavior = _resolve_behavior_config(
+        behavior_config,
         chalkiness=chalkiness,
         future_awareness=future_awareness,
         randomness=randomness,
@@ -225,9 +220,7 @@ def generate_public_entry_path(
             used,
             rng=rng,
             all_probabilities=probabilities,
-            chalkiness=chalkiness,
-            future_awareness=future_awareness,
-            randomness=randomness,
+            behavior_config=public_behavior,
         )
         if pick is None:
             continue
@@ -257,9 +250,11 @@ def choose_public_pick(
     chalkiness: float = DEFAULT_PUBLIC_CHALKINESS,
     future_awareness: float = DEFAULT_PUBLIC_FUTURE_AWARENESS,
     randomness: float = DEFAULT_PUBLIC_RANDOMNESS,
+    behavior_config: PublicBehaviorConfig | str | None = None,
 ) -> dict[str, Any] | None:
     """Choose one public pick from eligible teams using chalk-biased weights."""
-    _validate_behavior_parameters(
+    public_behavior = _resolve_behavior_config(
+        behavior_config,
         chalkiness=chalkiness,
         future_awareness=future_awareness,
         randomness=randomness,
@@ -275,9 +270,7 @@ def choose_public_pick(
     weights = _choice_weights(
         available,
         all_probabilities if all_probabilities is not None else week_df,
-        chalkiness=chalkiness,
-        future_awareness=future_awareness,
-        randomness=randomness,
+        behavior_config=public_behavior,
     )
     total = float(weights.sum())
     probabilities = (
@@ -352,9 +345,7 @@ def _simulate_public_pick_matrices(
     simulations: int,
     sample_entries: int,
     rng: np.random.Generator,
-    chalkiness: float,
-    future_awareness: float,
-    randomness: float,
+    behavior_config: PublicBehaviorConfig,
 ) -> dict[str, np.ndarray]:
     week_count = len(prepared.weeks)
     team_count = len(prepared.teams)
@@ -381,9 +372,7 @@ def _simulate_public_pick_matrices(
             week_df,
             prepared.probabilities,
             prepared.teams,
-            chalkiness=chalkiness,
-            future_awareness=future_awareness,
-            randomness=randomness,
+            behavior_config=behavior_config,
         )
         eligible_weights = np.broadcast_to(
             week_weights,
@@ -719,17 +708,13 @@ def _week_code_weights(
     all_probabilities: pd.DataFrame,
     teams: list[str],
     *,
-    chalkiness: float,
-    future_awareness: float,
-    randomness: float,
+    behavior_config: PublicBehaviorConfig,
 ) -> np.ndarray:
     weights = np.zeros(len(teams), dtype=float)
     raw = _choice_weights(
         week_df,
         all_probabilities,
-        chalkiness=chalkiness,
-        future_awareness=future_awareness,
-        randomness=randomness,
+        behavior_config=behavior_config,
     )
     team_positions = {team: index for index, team in enumerate(teams)}
     for value, team in zip(raw, week_df["team"].astype(str), strict=False):
@@ -742,31 +727,53 @@ def _choice_weights(
     week_df: pd.DataFrame,
     all_probabilities: pd.DataFrame,
     *,
-    chalkiness: float,
-    future_awareness: float,
-    randomness: float,
+    behavior_config: PublicBehaviorConfig,
 ) -> np.ndarray:
     rows = week_df.copy()
+    if rows.empty:
+        return np.array([], dtype=float)
     probabilities = rows["win_probability"].astype(float).clip(lower=0.01, upper=0.99)
-    popularity = _popularity_weights(rows)
+    popularity = _popularity_weights(rows, behavior_config=behavior_config)
     future_penalty = _future_value_penalty(
         rows,
         all_probabilities,
-        future_awareness=future_awareness,
+        behavior_config=behavior_config,
     )
-    base = (probabilities.to_numpy() ** float(chalkiness)) * popularity * future_penalty
+    scarcity = _week_alternative_scarcity(probabilities)
+    favorite_boost = np.where(
+        probabilities.to_numpy() >= 0.70,
+        1.0 + float(behavior_config.scarcity_weight) * 0.50 * scarcity,
+        1.0,
+    )
+    base = (
+        probabilities.to_numpy() ** float(behavior_config.chalkiness)
+    ) * popularity * future_penalty * favorite_boost
     contrarian = (
-        probabilities.to_numpy() ** max(1.0, float(chalkiness) * 0.55)
+        probabilities.to_numpy() ** max(1.0, float(behavior_config.chalkiness) * 0.55)
     ) * (1.0 / np.maximum(popularity, 0.05)) * future_penalty
-    return (1.0 - float(randomness)) * base + float(randomness) * contrarian
+    structured = (
+        (1.0 - float(behavior_config.contrarian_rate)) * base
+        + float(behavior_config.contrarian_rate) * contrarian
+    )
+    random_component = np.ones(len(rows), dtype=float)
+    raw = (
+        (1.0 - float(behavior_config.randomness)) * structured
+        + float(behavior_config.randomness) * random_component
+    )
+    return _apply_ownership_shape(raw, behavior_config)
 
 
-def _popularity_weights(rows: pd.DataFrame) -> np.ndarray:
+def _popularity_weights(
+    rows: pd.DataFrame,
+    *,
+    behavior_config: PublicBehaviorConfig,
+) -> np.ndarray:
     if "projected_public_pick_pct" in rows.columns:
         pct = rows["projected_public_pick_pct"].astype(float).clip(lower=0)
         if float(pct.sum()) > 0:
-            return 0.35 + 4.0 * pct.to_numpy()
-    return (
+            base = 0.35 + 4.0 * pct.to_numpy()
+            return base ** float(behavior_config.popularity_weight)
+    base = (
         rows["team"]
         .astype(str)
         .map(TEAM_POPULARITY_BIAS)
@@ -774,14 +781,16 @@ def _popularity_weights(rows: pd.DataFrame) -> np.ndarray:
         .astype(float)
         .to_numpy()
     )
+    return base ** float(behavior_config.popularity_weight)
 
 
 def _future_value_penalty(
     rows: pd.DataFrame,
     all_probabilities: pd.DataFrame,
     *,
-    future_awareness: float,
+    behavior_config: PublicBehaviorConfig,
 ) -> np.ndarray:
+    future_awareness = float(behavior_config.future_awareness)
     if future_awareness <= 0:
         return np.ones(len(rows), dtype=float)
     current_week = int(rows["week"].astype(int).min())
@@ -799,7 +808,8 @@ def _future_value_penalty(
     current_probabilities = rows["win_probability"].astype(float).to_numpy()
     future_values = rows["team"].astype(str).map(future_best).fillna(0.0).to_numpy()
     future_edge = np.maximum(future_values - current_probabilities, 0.0)
-    return 1.0 / (1.0 + float(future_awareness) * 2.0 * future_edge)
+    scarcity_multiplier = 2.0 + max(float(behavior_config.scarcity_weight) - 1.0, 0.0)
+    return 1.0 / (1.0 + future_awareness * scarcity_multiplier * future_edge)
 
 
 def _scarcity_index(
@@ -818,6 +828,82 @@ def _scarcity_index(
     return float(min(1.0, 0.55 * available_pressure + 0.40 * chalk_pressure + 0.05 * field_pressure))
 
 
+def _apply_ownership_shape(
+    weights: np.ndarray,
+    behavior_config: PublicBehaviorConfig,
+) -> np.ndarray:
+    shaped = np.asarray(weights, dtype=float)
+    if shaped.size == 0:
+        return shaped
+    shaped = np.where(np.isfinite(shaped) & (shaped > 0), shaped, 0.0)
+    total = float(shaped.sum())
+    probabilities = (
+        shaped / total
+        if total > 0
+        else np.full(shaped.size, 1.0 / float(shaped.size), dtype=float)
+    )
+
+    temperature = float(behavior_config.ownership_temperature)
+    if temperature != 1.0:
+        probabilities = probabilities ** (1.0 / temperature)
+        temperature_total = float(probabilities.sum())
+        probabilities = (
+            probabilities / temperature_total
+            if temperature_total > 0
+            else np.full(shaped.size, 1.0 / float(shaped.size), dtype=float)
+        )
+
+    cap = float(behavior_config.max_single_team_ownership)
+    if cap < 1.0:
+        probabilities = _cap_probabilities(probabilities, cap)
+    return probabilities
+
+
+def _cap_probabilities(probabilities: np.ndarray, cap: float) -> np.ndarray:
+    if probabilities.size == 0:
+        return probabilities
+    effective_cap = max(float(cap), 1.0 / float(probabilities.size))
+    capped = np.asarray(probabilities, dtype=float).copy()
+    for _ in range(probabilities.size + 1):
+        over = capped > effective_cap
+        if not bool(over.any()):
+            break
+        excess = float((capped[over] - effective_cap).sum())
+        capped[over] = effective_cap
+        under = ~over
+        if not bool(under.any()) or excess <= 0:
+            break
+        capacity = np.maximum(effective_cap - capped[under], 0.0)
+        capacity_total = float(capacity.sum())
+        if capacity_total <= 0:
+            break
+        capped[under] = capped[under] + excess * capacity / capacity_total
+
+    total = float(capped.sum())
+    return (
+        capped / total
+        if total > 0
+        else np.full(probabilities.size, 1.0 / float(probabilities.size), dtype=float)
+    )
+
+
+def _week_alternative_scarcity(win_probabilities: pd.Series) -> float:
+    probabilities = pd.to_numeric(win_probabilities, errors="coerce").dropna().astype(float)
+    if probabilities.empty:
+        return 0.0
+    count_60 = int((probabilities >= 0.60).sum())
+    count_65 = int((probabilities >= 0.65).sum())
+    count_70 = int((probabilities >= 0.70).sum())
+    count_75 = int((probabilities >= 0.75).sum())
+    scarcity_score = (
+        1.00 / (1 + count_60)
+        + 1.25 / (1 + count_65)
+        + 1.50 / (1 + count_70)
+        + 1.75 / (1 + count_75)
+    )
+    return float(max(0.0, min(1.0, scarcity_score / 5.50)))
+
+
 def _prepare_team_probabilities(
     *,
     schedule_df: pd.DataFrame,
@@ -825,6 +911,7 @@ def _prepare_team_probabilities(
     public_picks_df: pd.DataFrame,
     projected_team_strength: pd.DataFrame | None,
     team_probabilities_df: pd.DataFrame | None,
+    behavior_config: PublicBehaviorConfig,
 ) -> pd.DataFrame:
     if team_probabilities_df is not None:
         return _normalize_team_probabilities(_as_dataframe(team_probabilities_df))
@@ -837,6 +924,7 @@ def _prepare_team_probabilities(
             odds_df=odds_df,
             public_picks_df=public_picks_df,
             team_strength_df=projected_team_strength,
+            public_behavior_config=behavior_config,
         ),
     )
 
@@ -889,6 +977,22 @@ def _resolve_sample_entry_count(
     if public_field_sample_size is None:
         return int(pool_size)
     return int(min(pool_size, public_field_sample_size))
+
+
+def _resolve_behavior_config(
+    behavior_config: PublicBehaviorConfig | str | None,
+    *,
+    chalkiness: float,
+    future_awareness: float,
+    randomness: float,
+) -> PublicBehaviorConfig:
+    if behavior_config is not None:
+        return resolve_public_behavior_config(behavior_config)
+    return public_behavior_from_legacy(
+        chalkiness=chalkiness,
+        future_awareness=future_awareness,
+        randomness=randomness,
+    )
 
 
 def _empty_public_field_result(

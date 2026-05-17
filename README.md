@@ -27,6 +27,9 @@ heuristic top pick, path EV top pick, portfolio allocation, and dollar EV
 metrics when contest economics are provided. Phase 16 upgrades path EV with a
 simulated public-field path model, so future ownership reflects public entries'
 used-team constraints instead of treating each future week as independent.
+Phase 17 adds public behavior calibration presets and reports so full-season EV
+is interpreted as a range across plausible field behavior rather than a single
+point estimate.
 
 The real 2026 schedule is included. No real odds, real pool data, secrets, API
 keys, raw API responses, or scraping code are included.
@@ -707,6 +710,59 @@ Assumptions and limitations:
   entries. Its assumptions are configurable, but late-season ownership remains
   a projection when real future public-pick data is unavailable.
 
+## Public Behavior Calibration
+
+Full-season EV is sensitive to how the field behaves after the current public
+pick snapshot. A large EV multiple can be real, but it can also be an artifact
+of assuming the field is too chalky, too random, too naive about future weeks,
+or too quick to burn elite teams. Treat calibrated EV as a range.
+
+Behavior presets live in `src/survivor/public_behavior.py`:
+
+- `chalk_heavy`: crowd concentrates on obvious favorites and popular teams.
+- `balanced_public`: base case with moderate chalk, mild future awareness, and
+  occasional lower-owned choices.
+- `contrarian_public`: field spreads out and more often chooses viable
+  lower-owned alternatives.
+- `future_aware_public`: field preserves elite teams more carefully for later
+  scarce weeks.
+- `naive_public`: field mostly reacts to current-week win probability and
+  simple popularity cues.
+
+Run the calibration report:
+
+```powershell
+python scripts/run_public_behavior_calibration.py --season 2026 --week 1 --data-dir data/raw --team-strength data/sample/team_strength_sample.csv --entry-fee 10 --prize-pool 50000 --simulations 500 --beam-width 30 --top-k 4
+```
+
+It writes:
+
+```text
+outputs/reports/week_1_public_behavior_calibration.md
+```
+
+Interpretation:
+
+- Conservative EV: the low end across behavior presets. Use this when deciding
+  whether an edge survives skeptical public assumptions.
+- Base EV: usually `balanced_public`. Use this as the default operating view.
+- Aggressive EV: the high end across behavior presets. Treat it as upside when
+  the pool really does behave like that preset.
+
+The report warns when EV varies too much across presets and shows which
+behavior assumptions are most correlated with the EV spread. Until historical
+pool ownership is loaded, use the conservative/base/aggressive range rather
+than acting as if one exact EV multiple is known.
+
+Future historical calibration can start from:
+
+```text
+data/raw/templates/pool_history_calibration_template.csv
+```
+
+The schema records weekly pool size, top-three public pick teams, and top-three
+ownership percentages. No real history is required for the current model.
+
 ## Run Portfolio Optimization
 
 The portfolio CLI uses the weekly ranking engine, expands the sample entries to
@@ -800,6 +856,10 @@ optimization, operator summaries, and markdown report indexing.
 Phase 12 single-entry path EV optimizer: implemented with beam-search path
 generation, fixed-path Monte Carlo contest-equity evaluation, heuristic
 ranking comparison, and markdown reports.
+
+Phase 17 public behavior calibration: implemented with named behavior presets,
+a full-season calibration runner, sensitivity reports, deterministic tests, and
+a pool-history calibration template for future historical fitting.
 
 Future work: add ownership forecasting, more API adapters, optional scraper
 plugins, and an interactive dashboard without secrets, committed private data,
