@@ -18,8 +18,10 @@ CSV/JSON imports and future API or plugin adapters. Phase 9 adds automated NFL
 odds import from The Odds API. Phase 10 adds provider-agnostic public pick
 ingestion for manual CSV/JSON ownership exports and consensus aggregation.
 Phase 11 adds a single-command live weekly workflow for validation, rankings,
-simulations, portfolio allocation, and markdown report indexing. It does not
-scrape websites or build a dashboard.
+simulations, portfolio allocation, and markdown report indexing. Phase 12 adds
+a true single-entry path EV optimizer that maximizes simulated contest equity
+while keeping the heuristic weekly ranking as a diagnostic comparison. It does
+not scrape websites or build a dashboard.
 
 The real 2026 schedule is included. No real odds, real pool data, secrets, API
 keys, raw API responses, or scraping code are included.
@@ -115,6 +117,7 @@ Run the fixture:
 python scripts/validate_data_files.py --data-dir data/sample/real_week_1
 python scripts/run_weekly_rankings.py --week 1 --data-dir data/sample/real_week_1
 python scripts/run_simulations.py --week 1 --data-dir data/sample/real_week_1 --simulations 1000
+python scripts/run_single_entry_optimizer.py --season 2026 --week 1 --data-dir data/sample/real_week_1 --simulations 5000 --beam-width 100 --top-k 5
 python scripts/run_portfolio_optimizer.py --week 1 --data-dir data/sample/real_week_1 --entries 40 --aggression balanced
 ```
 
@@ -532,6 +535,60 @@ Interpretation guidance:
 - `uniqueness_value` is a simple first-pass proxy for strong picks that are not
   crowded by public ownership.
 
+## Run Single-Entry Path EV
+
+The weekly ranking model is still useful, but it is a heuristic:
+
+```text
+win probability + leverage - future cost
+```
+
+For one survivor entry, the direct objective is expected contest equity. A path
+has value when it survives through the simulated season and owns a larger share
+of the remaining contest. In the current model, if the entry survives and
+`N` total entries remain, equity is approximated as `1 / N`; if the entry is
+eliminated, equity is `0`.
+
+Run the path optimizer:
+
+```powershell
+python scripts/run_single_entry_optimizer.py --season 2026 --week 1 --data-dir data/sample/real_week_1 --simulations 5000 --beam-width 100 --top-k 5
+```
+
+It prints the best current-week pick, best path, path EV, and survival
+probability, then writes:
+
+```text
+outputs/reports/week_1_single_entry_path_ev.md
+```
+
+Add dollar reporting when you know the entry fee and prize pool:
+
+```powershell
+python scripts/run_single_entry_optimizer.py --season 2026 --week 1 --data-dir data/sample/real_week_1 --simulations 5000 --beam-width 100 --top-k 5 --entry-fee 10 --prize-pool 50000
+```
+
+With a prize pool, `EV dollars = expected contest equity * prize_pool`. With
+an entry fee or inferred baseline value, the report also shows EV multiple and
+expected edge, such as `$11.67`, `1.167x`, and `+16.7%`.
+
+The optimizer first uses a controlled beam search to avoid brute-forcing every
+possible team sequence. The weekly heuristic ranking and win probability order
+candidate expansion, retaining the top `--top-k` candidates per week and the
+top `--beam-width` paths after each expansion. The final decision is then made
+by Monte Carlo path EV, not by the heuristic score.
+
+Assumptions and limitations:
+
+- Current public pick percentages are used when available.
+- Future ownership uses public-pick rows when present; otherwise it is
+  projected proportional to win probability.
+- Win probabilities use no-vig moneyline first, then spread, then team-strength
+  priors when present, then a conservative home-field default.
+- Final equity assumes winner-take-all or equal split among survivors.
+- The public field is modeled in aggregate by week and does not track every
+  public entry's used-team history.
+
 ## Run Portfolio Optimization
 
 The portfolio CLI uses the weekly ranking engine, expands the sample entries to
@@ -621,6 +678,10 @@ simple or sample-size weighted consensus aggregation.
 Phase 11 live weekly workflow: implemented for one-command validation, optional
 odds refresh, optional public-pick import, rankings, simulations, portfolio
 optimization, operator summaries, and markdown report indexing.
+
+Phase 12 single-entry path EV optimizer: implemented with beam-search path
+generation, fixed-path Monte Carlo contest-equity evaluation, heuristic
+ranking comparison, and markdown reports.
 
 Future work: add ownership forecasting, more API adapters, optional scraper
 plugins, and an interactive dashboard without secrets, committed private data,
