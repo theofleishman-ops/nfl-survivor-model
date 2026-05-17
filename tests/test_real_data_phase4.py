@@ -10,6 +10,7 @@ from survivor.schemas import (
     validate_double_pick_weeks_df,
     validate_entries_df,
     validate_odds_df,
+    validate_pool_history_calibration_df,
     validate_pool_history_df,
     validate_public_picks_df,
     validate_schedule_df,
@@ -26,6 +27,7 @@ TEMPLATE_VALIDATORS = {
     "public_picks_template.csv": validate_public_picks_df,
     "entries_template.csv": validate_entries_df,
     "pool_history_template.csv": validate_pool_history_df,
+    "pool_history_calibration_template.csv": validate_pool_history_calibration_df,
     "double_pick_weeks_template.csv": validate_double_pick_weeks_df,
     "team_strength_template.csv": validate_team_strength_df,
 }
@@ -36,6 +38,7 @@ SEASON_FILES = [
     "public_picks.csv",
     "entries.csv",
     "pool_history.csv",
+    "pool_history_calibration.csv",
     "double_pick_weeks.csv",
     "team_strength.csv",
 ]
@@ -168,6 +171,7 @@ def test_load_season_data_works_with_copied_template_workspace(tmp_path):
     assert len(data["public_picks_df"]) == 4
     assert data["entries_df"]["active"].dtype == bool
     assert data["pool_history_df"] is not None
+    assert data["pool_history_calibration_df"] is not None
     assert data["double_pick_weeks_df"] is not None
     assert data["team_strength_df"] is not None
 

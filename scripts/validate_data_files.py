@@ -20,6 +20,7 @@ from survivor.schemas import (  # noqa: E402
     validate_double_pick_weeks_df,
     validate_entries_df,
     validate_odds_df,
+    validate_pool_history_calibration_df,
     validate_pool_history_df,
     validate_public_picks_schedule_relationship,
     validate_public_picks_df,
@@ -36,6 +37,7 @@ DATASET_VALIDATORS: dict[str, Validator] = {
     "public_picks": validate_public_picks_df,
     "entries": validate_entries_df,
     "pool_history": validate_pool_history_df,
+    "pool_history_calibration": validate_pool_history_calibration_df,
     "double_pick_weeks": validate_double_pick_weeks_df,
     "team_strength": validate_team_strength_df,
 }

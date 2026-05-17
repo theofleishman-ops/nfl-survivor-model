@@ -19,6 +19,7 @@ TEMPLATE_TARGETS = {
     "public_picks_template.csv": "public_picks.csv",
     "entries_template.csv": "entries.csv",
     "pool_history_template.csv": "pool_history.csv",
+    "pool_history_calibration_template.csv": "pool_history_calibration.csv",
     "double_pick_weeks_template.csv": "double_pick_weeks.csv",
     "team_strength_template.csv": "team_strength.csv",
 }

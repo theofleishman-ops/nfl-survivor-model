@@ -21,6 +21,7 @@ from survivor.schemas import (
     validate_entries_df,
     validate_odds_df,
     validate_or_raise,
+    validate_pool_history_calibration_df,
     validate_pool_history_df,
     validate_public_picks_df,
     validate_schedule_df,
@@ -44,6 +45,7 @@ SEASON_FILE_NAMES = {
     "public_picks": "public_picks.csv",
     "entries": "entries.csv",
     "pool_history": "pool_history.csv",
+    "pool_history_calibration": "pool_history_calibration.csv",
     "double_pick_weeks": "double_pick_weeks.csv",
     "team_strength": "team_strength.csv",
 }
@@ -172,6 +174,27 @@ def load_pool_history_df(path: str | Path) -> pd.DataFrame:
     )
 
 
+def load_pool_history_calibration_df(path: str | Path) -> pd.DataFrame:
+    """Load historical ownership and survival summaries for future calibration."""
+
+    df = _read_csv(path)
+    validate_or_raise(
+        "pool_history_calibration",
+        df,
+        validate_pool_history_calibration_df(df),
+        str(path),
+    )
+    for column in ["season", "week", "pool_size_start", "pool_size_end"]:
+        df[column] = pd.to_numeric(df[column], errors="raise").astype(int)
+    for column in ["top_pick_pct", "second_pick_pct", "third_pick_pct"]:
+        df[column] = pd.to_numeric(df[column], errors="raise").astype(float)
+    for column in ["top_pick_team", "second_pick_team", "third_pick_team"]:
+        df[column] = df[column].map(normalize_team_name)
+    return _strip_string_columns(df).sort_values(["season", "week"]).reset_index(
+        drop=True,
+    )
+
+
 def load_double_pick_weeks_df(path: str | Path) -> pd.DataFrame:
     """Load optional weeks that require more than one survivor pick."""
     df = _read_csv(path)
@@ -240,6 +263,7 @@ def load_season_data(
             "public_picks_df": sample_data["public_picks"],
             "entries_df": sample_data["entries"],
             "pool_history_df": None,
+            "pool_history_calibration_df": None,
             "double_pick_weeks_df": None,
             "team_strength_df": None,
         }
@@ -257,6 +281,11 @@ def load_season_data(
         "pool_history_df": (
             load_pool_history_df,
             base / SEASON_FILE_NAMES["pool_history"],
+            False,
+        ),
+        "pool_history_calibration_df": (
+            load_pool_history_calibration_df,
+            base / SEASON_FILE_NAMES["pool_history_calibration"],
             False,
         ),
         "double_pick_weeks_df": (
