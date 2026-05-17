@@ -24,7 +24,9 @@ while keeping the heuristic weekly ranking as a diagnostic comparison. It does
 not scrape websites or build a dashboard. Phase 13 integrates that path EV
 optimizer into the live weekly workflow so the operator summary shows the
 heuristic top pick, path EV top pick, portfolio allocation, and dollar EV
-metrics when contest economics are provided.
+metrics when contest economics are provided. Phase 16 upgrades path EV with a
+simulated public-field path model, so future ownership reflects public entries'
+used-team constraints instead of treating each future week as independent.
 
 The real 2026 schedule is included. No real odds, real pool data, secrets, API
 keys, raw API responses, or scraping code are included.
@@ -636,12 +638,60 @@ candidate expansion, retaining the top `--top-k` candidates per week and the
 top `--beam-width` paths after each expansion. The final decision is then made
 by Monte Carlo path EV, not by the heuristic score.
 
+## Public Field Path Simulation
+
+Independent weekly ownership is a useful starting point, but it is too generous
+about path uniqueness. Real survivor entries cannot use the same team twice.
+That means future public ownership depends on what the field has already
+burned, which teams survived, and how many remaining entries still have access
+to each future option. A team that looks like 35% future chalk in an independent
+snapshot may be unavailable to much of the surviving field because it was
+already burned earlier.
+
+`src/survivor/public_field.py` simulates weighted public entries through the
+remaining season. Each public entry:
+
+- tracks its own used teams,
+- chooses only eligible scheduled teams,
+- favors high win probability and public/chalk popularity,
+- applies a small future-scarcity adjustment,
+- occasionally takes a contrarian/noisy path.
+
+The initial pick weight is:
+
+```text
+(win_probability ^ chalkiness)
+* popularity_bias
+* scarcity_adjustment
+```
+
+The simulator returns public entry paths, projected ownership by week,
+remaining-field distribution, team exhaustion, and scarcity diagnostics. Path
+EV consumes the same simulated public paths when multiple weeks are evaluated,
+so expected survivor counts and overlap with your path emerge from actual
+public used-team constraints. Single-week EV still uses exact current-week
+ownership because there is no future used-team constraint to model.
+
+Performance is controlled with weighted representative entries rather than
+brute-forcing every public entry. The default public-field sample size is `400`
+weighted entries per path-EV simulation. Increase it for smoother diagnostics
+or lower it for faster experimentation:
+
+```powershell
+python scripts/run_single_entry_optimizer.py --season 2026 --week 1 --data-dir data/raw/2026 --team-strength data/raw/2026/team_strength.csv --path-ev-horizon full-season --public-field-sample-size 800
+python scripts/run_live_week.py --season 2026 --week 1 --run-path-ev --team-strength data/raw/2026/team_strength.csv --path-ev-horizon full-season --public-field-sample-size 800
+```
+
+The public-field report sections show expected remaining field by week,
+expected team exhaustion, projected future ownership, scarcity weeks, path
+uniqueness score, and expected overlap with the simulated public field.
+
 Assumptions and limitations:
 
 - Current public pick percentages are used when available.
-- Future ownership uses public-pick rows when present; otherwise it is
-  projected from win probability, placeholder team popularity, and the scarcity
-  of good alternatives in that week.
+- Future ownership uses pathwise public-entry simulation when multiple weeks
+  are evaluated. Future public-pick rows and projected ownership are treated as
+  popularity inputs, then adjusted by used-team constraints.
 - Win probabilities are tagged as `real_moneyline`, `real_spread`,
   `projected_team_strength`, or `fallback_default`. The model uses no-vig
   moneyline first, then spread, then `team_strength.csv` ratings with opponent
@@ -653,8 +703,9 @@ Assumptions and limitations:
   path weeks use `fallback_default`, the report labels full-season EV as
   `UNRELIABLE` and treats it as diagnostic rather than actionable.
 - Final equity assumes winner-take-all or equal split among survivors.
-- The public field is modeled in aggregate by week and does not track every
-  public entry's used-team history.
+- The public-field model is behavioral, not a claim to know exact opponent
+  entries. Its assumptions are configurable, but late-season ownership remains
+  a projection when real future public-pick data is unavailable.
 
 ## Run Portfolio Optimization
 

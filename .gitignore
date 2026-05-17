@@ -16,6 +16,7 @@ venv/
 
 # Codex/local verification scratch
 .codex-test-deps/
+.codex_test_deps/
 .codex-wheels/
 .codex-pip-tmp/
 .pytest-tmp-local/

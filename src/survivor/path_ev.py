@@ -15,6 +15,12 @@ import pandas as pd
 
 from survivor.odds import add_no_vig_probabilities
 from survivor.optimizer import rank_weekly_picks
+from survivor.public_field import (
+    DEFAULT_PUBLIC_FIELD_SAMPLE_SIZE,
+    PUBLIC_FIELD_PICK_SOURCE,
+    PublicFieldSimulationResult,
+    simulate_public_field_paths,
+)
 from survivor.team_strength import build_team_strength_priors
 from survivor.win_probability import (
     DEFAULT_TEAM_STRENGTH_SCALE,
@@ -31,6 +37,7 @@ DEFAULT_HOME_WIN_PROBABILITY = 0.52
 DEFAULT_PATH_EV_HORIZON = "available"
 DEFAULT_TEAM_STRENGTH_HOME_FIELD_ADJUSTMENT = 0.0
 DEFAULT_FORWARD_TEAM_STRENGTH_SCALE = DEFAULT_TEAM_STRENGTH_SCALE
+DEFAULT_USE_PUBLIC_FIELD_SIMULATION = True
 UNRELIABLE_FALLBACK_COVERAGE_THRESHOLD = 0.25
 PATH_EV_HORIZONS = ("week", "current", "available", "full-season")
 PROBABILITY_SOURCE_REAL_MONEYLINE = "real_moneyline"
@@ -96,9 +103,10 @@ ASSUMPTIONS = (
     "The selected entry is removed from public ownership counts for its fixed pick in each week.",
     "Winner-take-all or equal split among final survivors is assumed.",
     "Current public pick percentages are used when present.",
-    "Future ownership is projected from win probability, placeholder team popularity, and weekly alternative scarcity when public pick data is missing.",
+    "Future public ownership is simulated as public-entry paths with used-team constraints when multiple weeks are evaluated.",
+    "Public entries prefer win probability and chalk, weakly account for future scarcity, and occasionally choose contrarian paths.",
     "Future win probabilities use no-vig moneyline first, then spread, then team-strength ratings with opponent strength and configurable home field, then a conservative default.",
-    "The public field is modeled in aggregate by week and does not track every public entry's used-team history.",
+    "Single-week evaluations use exact current-week ownership because used-team constraints have no future week to affect.",
 )
 
 
@@ -189,6 +197,7 @@ class _CommonSimulation:
     weeks: list[int]
     team_wins: dict[tuple[int, str], np.ndarray]
     public_distributions: dict[int, pd.DataFrame]
+    public_field: PublicFieldSimulationResult | None = None
 
 
 def build_forward_game_probabilities(
@@ -343,12 +352,15 @@ def evaluate_path_ev(
     team_strength_df: pd.DataFrame | None = None,
     team_strength_home_field_adjustment: float = DEFAULT_TEAM_STRENGTH_HOME_FIELD_ADJUSTMENT,
     team_strength_scale: float = DEFAULT_FORWARD_TEAM_STRENGTH_SCALE,
+    use_public_field_simulation: bool = DEFAULT_USE_PUBLIC_FIELD_SIMULATION,
+    public_field_sample_size: int | None = DEFAULT_PUBLIC_FIELD_SAMPLE_SIZE,
 ) -> PathEVResult:
     """Evaluate a single fixed path using Monte Carlo contest equity."""
     _validate_positive_int("pool_size", pool_size)
     _validate_positive_int("simulations", simulations)
     _validate_non_negative_optional("entry_fee", entry_fee)
     _validate_non_negative_optional("prize_pool", prize_pool)
+    _validate_positive_optional("public_field_sample_size", public_field_sample_size)
 
     path = _as_dataframe(path_df)
     if path.empty:
@@ -377,6 +389,8 @@ def evaluate_path_ev(
         pool_size=pool_size,
         simulations=simulations,
         random_seed=random_seed,
+        use_public_field_simulation=use_public_field_simulation,
+        public_field_sample_size=public_field_sample_size,
     )
     evaluated, survival_by_week, field_by_week = _evaluate_prepared_paths(
         paths=prepared_path,
@@ -408,6 +422,8 @@ def evaluate_path_ev(
         entry_fee=entry_fee,
         prize_pool=prize_pool,
         simulations=simulations,
+        public_field=simulation.public_field,
+        path_field_by_week=field_with_path,
     )
 
     return PathEVResult(
@@ -461,11 +477,14 @@ def optimize_single_entry_path(
     team_strength_df: pd.DataFrame | None = None,
     team_strength_home_field_adjustment: float = DEFAULT_TEAM_STRENGTH_HOME_FIELD_ADJUSTMENT,
     team_strength_scale: float = DEFAULT_FORWARD_TEAM_STRENGTH_SCALE,
+    use_public_field_simulation: bool = DEFAULT_USE_PUBLIC_FIELD_SIMULATION,
+    public_field_sample_size: int | None = DEFAULT_PUBLIC_FIELD_SAMPLE_SIZE,
 ) -> SingleEntryPathOptimizationResult:
     """Find the single-entry path with the highest simulated contest equity."""
     _validate_positive_int("simulations", simulations)
     _validate_non_negative_optional("entry_fee", entry_fee)
     _validate_non_negative_optional("prize_pool", prize_pool)
+    _validate_positive_optional("public_field_sample_size", public_field_sample_size)
     candidate_paths = generate_candidate_paths(
         schedule_df=schedule_df,
         odds_df=odds_df,
@@ -503,6 +522,8 @@ def optimize_single_entry_path(
         pool_size=pool_size,
         simulations=simulations,
         random_seed=random_seed,
+        use_public_field_simulation=use_public_field_simulation,
+        public_field_sample_size=public_field_sample_size,
     )
     evaluated_paths, survival_by_week, field_by_week = _evaluate_prepared_paths(
         paths=prepared_paths,
@@ -548,6 +569,8 @@ def optimize_single_entry_path(
         entry_fee=entry_fee,
         prize_pool=prize_pool,
         simulations=simulations,
+        public_field=simulation.public_field,
+        path_field_by_week=best_field,
     )
     diagnostics["horizon_comparison"] = _build_horizon_comparison(
         path=best_path,
@@ -559,6 +582,8 @@ def optimize_single_entry_path(
         random_seed=random_seed,
         entry_fee=entry_fee,
         prize_pool=prize_pool,
+        use_public_field_simulation=use_public_field_simulation,
+        public_field_sample_size=public_field_sample_size,
         primary_summary=best.to_dict(),
     )
 
@@ -706,6 +731,8 @@ def _build_path_diagnostics(
     entry_fee: float | None,
     prize_pool: float | None,
     simulations: int,
+    public_field: PublicFieldSimulationResult | None = None,
+    path_field_by_week: pd.DataFrame | None = None,
 ) -> dict[str, Any]:
     path_df = path.sort_values("week").reset_index(drop=True).copy()
     weeks = [int(week) for week in path_df["week"].astype(int).tolist()]
@@ -723,7 +750,7 @@ def _build_path_diagnostics(
         if prize_pool is not None and float(pool_size) > 0
         else None
     )
-    return {
+    diagnostics = {
         "horizon": horizon,
         "number_of_weeks_evaluated": len(weeks),
         "weeks_evaluated": weeks,
@@ -772,6 +799,121 @@ def _build_path_diagnostics(
         "pool_size": int(pool_size),
         "simulations": int(simulations),
     }
+    diagnostics.update(
+        _public_field_diagnostics(
+            public_field=public_field,
+            path_field_by_week=path_field_by_week,
+        ),
+    )
+    return diagnostics
+
+
+def _public_field_diagnostics(
+    *,
+    public_field: PublicFieldSimulationResult | None,
+    path_field_by_week: pd.DataFrame | None,
+) -> dict[str, Any]:
+    if public_field is None:
+        return {
+            "public_field_model": "independent_weekly_ownership",
+            "public_field_path_simulation_enabled": False,
+            "public_field_sample_size": None,
+            "public_field_entry_weight": None,
+            "expected_remaining_field_by_week": [],
+            "expected_team_exhaustion": [],
+            "projected_public_ownership_by_week": [],
+            "public_field_scarcity_by_week": [],
+            "scarcity_weeks": [],
+            "path_uniqueness_score": None,
+            "expected_public_overlap_entries": None,
+            "expected_public_overlap_pct": None,
+        }
+
+    path_field = _as_dataframe(path_field_by_week)
+    scarcity = public_field.scarcity_by_week.copy()
+    ownership = public_field.week_by_week_public_ownership.copy()
+    exhaustion = public_field.team_usage_exhaustion.copy()
+    scarcity_weeks = (
+        scarcity.loc[scarcity["scarcity_spike"].astype(bool), "week"]
+        .astype(int)
+        .tolist()
+        if not scarcity.empty and "scarcity_spike" in scarcity.columns
+        else []
+    )
+    path_uniqueness = (
+        float(path_field["path_uniqueness_score"].astype(float).mean())
+        if not path_field.empty and "path_uniqueness_score" in path_field.columns
+        else None
+    )
+    overlap_entries = (
+        float(path_field["expected_public_overlap_entries"].astype(float).mean())
+        if not path_field.empty and "expected_public_overlap_entries" in path_field.columns
+        else None
+    )
+    overlap_pct = (
+        float(path_field["avg_path_overlap_pct"].astype(float).mean())
+        if not path_field.empty and "avg_path_overlap_pct" in path_field.columns
+        else None
+    )
+
+    return {
+        "public_field_model": PUBLIC_FIELD_PICK_SOURCE,
+        "public_field_path_simulation_enabled": True,
+        "public_field_sample_size": int(public_field.sample_entry_count),
+        "public_field_entry_weight": float(public_field.entry_weight),
+        "expected_remaining_field_by_week": _records_for_columns(
+            scarcity,
+            [
+                "week",
+                "expected_remaining_entries",
+                "average_available_teams",
+                "max_projected_ownership_pct",
+                "expected_chalk_concentration",
+                "scarcity_index",
+                "scarcity_spike",
+            ],
+        ),
+        "expected_team_exhaustion": _top_records_by_week(
+            exhaustion,
+            sort_column="burned_pct",
+            columns=[
+                "week",
+                "team",
+                "expected_entries_burned_team",
+                "burned_pct",
+                "expected_remaining_entries_with_team_available",
+                "remaining_field_available_pct",
+            ],
+            per_week=8,
+        ),
+        "projected_public_ownership_by_week": _top_records_by_week(
+            ownership,
+            sort_column="projected_ownership_pct",
+            columns=[
+                "week",
+                "team",
+                "expected_public_picks",
+                "projected_ownership_pct",
+            ],
+            per_week=8,
+        ),
+        "public_field_scarcity_by_week": _records_for_columns(
+            scarcity,
+            [
+                "week",
+                "expected_remaining_entries",
+                "average_available_teams",
+                "max_projected_ownership_pct",
+                "expected_chalk_concentration",
+                "scarcity_index",
+                "scarcity_spike",
+            ],
+        ),
+        "scarcity_weeks": sorted(set(int(week) for week in scarcity_weeks)),
+        "path_uniqueness_score": path_uniqueness,
+        "expected_public_overlap_entries": overlap_entries,
+        "expected_public_overlap_pct": overlap_pct,
+    }
 
 
 def _fallback_coverage(path_df: pd.DataFrame) -> float:
@@ -808,6 +950,8 @@ def _build_horizon_comparison(
     random_seed: int | None,
     entry_fee: float | None,
     prize_pool: float | None,
+    use_public_field_simulation: bool,
+    public_field_sample_size: int | None,
     primary_summary: dict[str, Any],
 ) -> list[dict[str, Any]]:
     path_weeks = set(path["week"].astype(int).tolist())
@@ -848,6 +992,8 @@ def _build_horizon_comparison(
                 random_seed=random_seed,
                 entry_fee=entry_fee,
                 prize_pool=prize_pool,
+                use_public_field_simulation=use_public_field_simulation,
+                public_field_sample_size=public_field_sample_size,
             )
         coverage = _fallback_coverage(path[path["week"].astype(int).isin(set(weeks))])
         rows.append(_horizon_row(label, horizon, weeks, summary, coverage))
@@ -864,6 +1010,8 @@ def _evaluate_path_for_weeks(
     random_seed: int | None,
     entry_fee: float | None,
     prize_pool: float | None,
+    use_public_field_simulation: bool,
+    public_field_sample_size: int | None,
 ) -> dict[str, Any]:
     subset = path[path["week"].astype(int).isin(set(weeks))].copy()
     prepared = _prepare_paths_for_evaluation(subset, model.team_probabilities)
@@ -873,6 +1021,8 @@ def _evaluate_path_for_weeks(
         pool_size=pool_size,
         simulations=simulations,
         random_seed=random_seed,
+        use_public_field_simulation=use_public_field_simulation,
+        public_field_sample_size=public_field_sample_size,
     )
     evaluated, _, _ = _evaluate_prepared_paths(
         paths=prepared,
@@ -960,6 +1110,34 @@ def _value_counts_dict(df: pd.DataFrame, column: str) -> dict[str, int]:
         str(key): int(value)
         for key, value in values.value_counts().sort_index().items()
     }
+
+
+def _records_for_columns(df: pd.DataFrame, columns: list[str]) -> list[dict[str, Any]]:
+    if df.empty:
+        return []
+    available = [column for column in columns if column in df.columns]
+    if not available:
+        return []
+    return df[available].copy().to_dict("records")
+
+
+def _top_records_by_week(
+    df: pd.DataFrame,
+    *,
+    sort_column: str,
+    columns: list[str],
+    per_week: int,
+) -> list[dict[str, Any]]:
+    if df.empty or sort_column not in df.columns or "week" not in df.columns:
+        return []
+    frames: list[pd.DataFrame] = []
+    for _, week_df in df.groupby("week", sort=True):
+        frames.append(
+            week_df.sort_values(sort_column, ascending=False).head(per_week),
+        )
+    if not frames:
+        return []
+    return _records_for_columns(pd.concat(frames, ignore_index=True), columns)
 
 
 def _prepare_schedule(schedule_df: pd.DataFrame) -> pd.DataFrame:
@@ -1515,6 +1693,8 @@ def _simulate_common_seasons(
     pool_size: int,
     simulations: int,
     random_seed: int | None,
+    use_public_field_simulation: bool,
+    public_field_sample_size: int | None,
 ) -> _CommonSimulation:
     rng = np.random.default_rng(random_seed)
     team_wins: dict[tuple[int, str], np.ndarray] = {}
@@ -1536,6 +1716,27 @@ def _simulate_common_seasons(
             team_wins[(int(week), team_a)] = a_wins
             team_wins[(int(week), team_b)] = ~a_wins
 
+    public_field = None
+    public_entry_count = max(int(pool_size) - 1, 0)
+    if (
+        use_public_field_simulation
+        and len(weeks) > 1
+        and public_entry_count > 0
+    ):
+        public_field = simulate_public_field_paths(
+            schedule_df=model.schedule,
+            odds_df=pd.DataFrame(),
+            public_picks_df=model.public_picks,
+            start_week=int(min(weeks)),
+            pool_size=public_entry_count,
+            simulations=simulations,
+            random_seed=random_seed,
+            public_field_sample_size=public_field_sample_size,
+            team_probabilities_df=model.team_probabilities,
+            weeks=weeks,
+            include_entry_paths=False,
+        )
+
     return _CommonSimulation(
         weeks=[int(week) for week in weeks],
         team_wins=team_wins,
@@ -1544,6 +1745,7 @@ def _simulate_common_seasons(
             for week in weeks
             if int(week) in distributions
         },
+        public_field=public_field,
     )
 
 
@@ -1556,6 +1758,15 @@ def _evaluate_prepared_paths(
     entry_fee: float | None,
     prize_pool: float | None,
 ) -> tuple[pd.DataFrame, pd.DataFrame, pd.DataFrame]:
+    if simulation.public_field is not None:
+        return _evaluate_prepared_paths_with_public_field(
+            paths=paths,
+            public_field=simulation.public_field,
+            pool_size=pool_size,
+            entry_fee=entry_fee,
+            prize_pool=prize_pool,
+        )
+
     summaries: list[dict[str, Any]] = []
     survival_rows: list[dict[str, Any]] = []
     field_rows: list[dict[str, Any]] = []
@@ -1608,6 +1819,148 @@ def _evaluate_prepared_paths(
             previous_cumulative_path_ev = cumulative_path_ev
 
         final_public_entries = public_entries_if_alive
+        total_survivors_if_alive = final_public_entries + 1.0
+        equity_if_alive = 1.0 / np.maximum(total_survivors_if_alive, 1.0)
+        expected_equity_if_alive = float(equity_if_alive.mean())
+        path_ev = float(path_survival_probability * expected_equity_if_alive)
+        expected_survivors_if_alive = float(total_survivors_if_alive.mean())
+        estimated_path_ev = _last_numeric(ordered, "estimated_path_ev")
+        value_metrics = _value_metrics(
+            path_ev=path_ev,
+            pool_size=pool_size,
+            entry_fee=entry_fee,
+            prize_pool=prize_pool,
+        )
+        summaries.append(
+            {
+                "path_id": int(path_id),
+                "path": _format_path_key(ordered.to_dict("records")),
+                "first_week": int(ordered["week"].min()),
+                "first_team": str(ordered.iloc[0]["team"]),
+                "path_ev": path_ev,
+                "expected_contest_equity": path_ev,
+                "path_survival_probability": float(path_survival_probability),
+                "expected_final_field_size": expected_survivors_if_alive,
+                "expected_final_public_entries": float(final_public_entries.mean()),
+                "expected_survivors_if_alive": expected_survivors_if_alive,
+                "expected_equity_if_alive": expected_equity_if_alive,
+                **value_metrics,
+                "estimated_path_ev": estimated_path_ev,
+                "cumulative_survival_probability": _last_numeric(
+                    ordered,
+                    "cumulative_survival_probability",
+                ),
+            },
+        )
+
+    evaluated = pd.DataFrame(summaries).sort_values(
+        ["path_ev", "path_survival_probability", "estimated_path_ev"],
+        ascending=[False, False, False],
+    ).reset_index(drop=True)
+    survival_by_week = pd.DataFrame(survival_rows).sort_values(
+        ["path_id", "week"],
+    ).reset_index(drop=True)
+    field_by_week = pd.DataFrame(field_rows).sort_values(
+        ["path_id", "week"],
+    ).reset_index(drop=True)
+    return evaluated, survival_by_week, field_by_week
+
+
+def _evaluate_prepared_paths_with_public_field(
+    *,
+    paths: pd.DataFrame,
+    public_field: PublicFieldSimulationResult,
+    pool_size: int,
+    entry_fee: float | None,
+    prize_pool: float | None,
+) -> tuple[pd.DataFrame, pd.DataFrame, pd.DataFrame]:
+    summaries: list[dict[str, Any]] = []
+    survival_rows: list[dict[str, Any]] = []
+    field_rows: list[dict[str, Any]] = []
+
+    for path_id, path in paths.groupby("path_id", sort=True):
+        ordered = path.sort_values("week").reset_index(drop=True)
+        path_survival_probability = 1.0
+        previous_cumulative_path_ev = 1.0 / max(float(pool_size), 1.0)
+        public_alive = np.ones(
+            (public_field.simulations, public_field.sample_entry_count),
+            dtype=bool,
+        )
+
+        for row in ordered.to_dict("records"):
+            week = int(row["week"])
+            team = str(row["team"])
+            game_id = str(row["game_id"])
+            week_index = public_field.week_to_index.get(week)
+            if week_index is None:
+                raise ValueError(f"Public field simulation is missing week {week}.")
+            if team not in public_field.team_to_code:
+                raise ValueError(f"Public field simulation is missing team {team}.")
+
+            team_code = int(public_field.team_to_code[team])
+            game_code = int(public_field.game_to_code[str(game_id)])
+            picks = public_field.pick_matrix[:, :, week_index]
+            pick_games = public_field.pick_game_matrix[:, :, week_index]
+            wins = public_field.pick_win_matrix[:, :, week_index]
+            same_game = pick_games == game_code
+            conditioned_wins = np.where(picks == team_code, True, wins)
+            conditioned_wins = np.where(
+                same_game & (picks != team_code),
+                False,
+                conditioned_wins,
+            )
+
+            public_entries_before = public_alive.sum(axis=1).astype(float) * public_field.entry_weight
+            overlap_entries = (
+                (public_alive & (picks == team_code)).sum(axis=1).astype(float)
+                * public_field.entry_weight
+            )
+            overlap_pct = np.divide(
+                overlap_entries,
+                public_entries_before,
+                out=np.zeros_like(overlap_entries),
+                where=public_entries_before > 0,
+            )
+
+            public_alive = public_alive & conditioned_wins
+            public_entries_after = public_alive.sum(axis=1).astype(float) * public_field.entry_weight
+            path_survival_probability *= float(row["win_probability"])
+            expected_public_entries = float(public_entries_after.mean())
+            expected_total_entries = expected_public_entries + 1.0
+            equity_if_alive = 1.0 / np.maximum(public_entries_after + 1.0, 1.0)
+            expected_equity_if_alive = float(equity_if_alive.mean())
+            cumulative_path_ev = float(
+                path_survival_probability * expected_equity_if_alive,
+            )
+            avg_overlap_pct = float(overlap_pct.mean())
+            survival_rows.append(
+                {
+                    "path_id": int(path_id),
+                    "week": week,
+                    "path_survival_probability": float(path_survival_probability),
+                },
+            )
+            field_rows.append(
+                {
+                    "path_id": int(path_id),
+                    "week": week,
+                    "expected_public_entries_before_week": float(
+                        public_entries_before.mean(),
+                    ),
+                    "expected_public_entries": expected_public_entries,
+                    "expected_total_entries": expected_total_entries,
+                    "expected_equity_if_alive": expected_equity_if_alive,
+                    "expected_public_overlap_entries": float(overlap_entries.mean()),
+                    "avg_path_overlap_pct": avg_overlap_pct,
+                    "path_uniqueness_score": float(1.0 - avg_overlap_pct),
+                    "cumulative_path_ev": cumulative_path_ev,
+                    "weekly_ev_delta": cumulative_path_ev - previous_cumulative_path_ev,
+                    "public_field_model": PUBLIC_FIELD_PICK_SOURCE,
+                },
+            )
+            previous_cumulative_path_ev = cumulative_path_ev
+
+        final_public_entries = public_alive.sum(axis=1).astype(float) * public_field.entry_weight
         total_survivors_if_alive = final_public_entries + 1.0
         equity_if_alive = 1.0 / np.maximum(total_survivors_if_alive, 1.0)
         expected_equity_if_alive = float(equity_if_alive.mean())
@@ -1932,6 +2285,11 @@ def _as_dataframe(data: pd.DataFrame | None) -> pd.DataFrame:
 def _validate_positive_int(name: str, value: int) -> None:
     if int(value) <= 0:
         raise ValueError(f"{name} must be positive.")
+
+
+def _validate_positive_optional(name: str, value: int | None) -> None:
+    if value is not None and int(value) <= 0:
+        raise ValueError(f"{name} must be positive when provided.")
 
 
 def _validate_non_negative_optional(name: str, value: float | None) -> None:
