@@ -15,7 +15,7 @@ if str(SRC_DIR) not in sys.path:
     sys.path.insert(0, str(SRC_DIR))
 
 from survivor.loaders import load_sample_data, load_season_data  # noqa: E402
-from survivor.path_ev import optimize_single_entry_path  # noqa: E402
+from survivor.path_ev import PATH_EV_HORIZONS, optimize_single_entry_path  # noqa: E402
 from survivor.path_ev_reports import write_single_entry_path_ev_report  # noqa: E402
 
 
@@ -54,6 +54,12 @@ def main() -> None:
         type=int,
         default=None,
         help="Optional cap on final candidate paths evaluated.",
+    )
+    parser.add_argument(
+        "--path-ev-horizon",
+        choices=PATH_EV_HORIZONS,
+        default="available",
+        help="Evaluation horizon. Defaults to consecutive weeks with real odds available.",
     )
     parser.add_argument(
         "--pool-size",
@@ -107,6 +113,7 @@ def main() -> None:
         beam_width=args.beam_width,
         entry_fee=args.entry_fee,
         prize_pool=args.prize_pool,
+        path_ev_horizon=args.path_ev_horizon,
     )
     report_path = write_single_entry_path_ev_report(
         result,
@@ -122,14 +129,25 @@ def main() -> None:
         "Best current-week pick: "
         f"{current_pick['team']} over {current_pick['opponent']}"
     )
-    print(f"Path EV: {result.best_path_ev:.4%}")
+    print(f"Path EV: {_format_equity_pct(result.best_path_ev)}")
+    print(f"Baseline fair value: {_format_money_or_not_provided(result.baseline_value)}")
     if result.ev_dollars is not None:
         print(f"EV dollars: ${result.ev_dollars:,.2f}")
-    print(f"EV multiple: {result.ev_multiple:.3f}x")
-    print(f"Expected edge: {result.expected_edge:+.1%}")
-    print(f"Path survival probability: {result.path_survival_probability:.1%}")
     print(
-        "Expected survivors if alive: "
+        "EV multiple vs entry fee: "
+        f"{_format_multiple_or_not_provided(result.ev_multiple_vs_entry_fee)}"
+    )
+    print(
+        "EV multiple vs baseline fair value: "
+        f"{_format_multiple_or_not_provided(result.ev_multiple_vs_baseline)}"
+    )
+    print(
+        "Expected edge vs baseline: "
+        f"{_format_edge_or_not_provided(result.expected_edge_vs_baseline)}"
+    )
+    print(f"Path survival probability: {_format_rate_pct(result.path_survival_probability)}")
+    print(
+        "Expected final survivors if alive: "
         f"{result.expected_survivors_if_alive:.2f}"
     )
     print("")
@@ -197,6 +215,50 @@ def _used_teams_from_entries(entries_df: pd.DataFrame | None, week: int) -> list
         return prior["team_picked"].dropna().astype(str).tolist()
 
     return []
+
+
+def _format_equity_pct(value: float) -> str:
+    numeric = float(value)
+    if numeric == 0:
+        return "0%"
+    percentage = numeric * 100
+    abs_percentage = abs(percentage)
+    if abs_percentage >= 0.01:
+        return f"{percentage:.4f}%"
+    if abs_percentage >= 0.0001:
+        return f"{percentage:.6f}%"
+    return f"{percentage:.8f}%"
+
+
+def _format_rate_pct(value: float) -> str:
+    numeric = float(value)
+    if numeric == 0:
+        return "0%"
+    percentage = numeric * 100
+    abs_percentage = abs(percentage)
+    if abs_percentage >= 1:
+        return f"{percentage:.1f}%"
+    if abs_percentage >= 0.01:
+        return f"{percentage:.3f}%"
+    return f"{percentage:.6f}%"
+
+
+def _format_money_or_not_provided(value: float | None) -> str:
+    if value is None or pd.isna(value):
+        return "not provided"
+    return f"${float(value):,.2f}"
+
+
+def _format_multiple_or_not_provided(value: float | None) -> str:
+    if value is None or pd.isna(value):
+        return "not provided"
+    return f"{float(value):.3f}x"
+
+
+def _format_edge_or_not_provided(value: float | None) -> str:
+    if value is None or pd.isna(value):
+        return "not provided"
+    return f"{float(value):+.1%}"
 
 
 if __name__ == "__main__":

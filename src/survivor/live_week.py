@@ -30,6 +30,7 @@ from survivor.odds_providers.the_odds_api import API_KEY_ENV_VAR, TheOddsAPIProv
 from survivor.optimizer import rank_weekly_picks
 from survivor.path_ev import (
     DEFAULT_BEAM_WIDTH,
+    DEFAULT_PATH_EV_HORIZON,
     DEFAULT_TOP_K,
     SingleEntryPathOptimizationResult,
     optimize_single_entry_path,
@@ -78,6 +79,7 @@ class LiveWeekOptions:
     path_ev_simulations: int | None = None
     beam_width: int = DEFAULT_BEAM_WIDTH
     top_k: int = DEFAULT_TOP_K
+    path_ev_horizon: str = DEFAULT_PATH_EV_HORIZON
     entry_fee: float | None = None
     prize_pool: float | None = None
     dry_run: bool = False
@@ -258,6 +260,7 @@ def run_live_week(
                 beam_width=options.beam_width,
                 entry_fee=options.entry_fee,
                 prize_pool=options.prize_pool,
+                path_ev_horizon=options.path_ev_horizon,
             )
         except Exception as exc:
             raise LiveWeekWorkflowError(
@@ -502,8 +505,11 @@ def _path_ev_status_detail(
     options: LiveWeekOptions,
 ) -> str:
     pick = _current_path_ev_pick(result, options.week)
+    diagnostics = result.diagnostics or {}
     return (
         f"{_effective_path_ev_simulations(options)} simulations, "
+        f"{diagnostics.get('number_of_weeks_evaluated', len(result.best_path))} weeks, "
+        f"{diagnostics.get('horizon', options.path_ev_horizon)} horizon, "
         f"{pick['team']} over {pick['opponent']}"
     )
 
@@ -518,19 +524,47 @@ def _path_ev_summary_lines(
         return ["skipped (use --run-path-ev)"]
 
     pick = _current_path_ev_pick(result, options.week)
+    diagnostics = result.diagnostics or {}
     lines = [
         f"Best Pick: {pick['team']} over {pick['opponent']}",
-        f"Path EV Estimate: {result.best_path_ev:.4%}",
+        f"Horizon: {diagnostics.get('horizon', options.path_ev_horizon)}",
+        f"Weeks Evaluated: {diagnostics.get('number_of_weeks_evaluated', len(result.best_path))}",
+        f"Baseline Fair Value: {_format_money_or_not_provided(result.baseline_value)}",
+        f"Path EV Estimate: {_format_equity_pct(result.best_path_ev)}",
+        f"Path Survival Probability: {_format_rate_pct(result.path_survival_probability)}",
+        (
+            "Expected Final Survivors If Alive: "
+            f"{result.expected_survivors_if_alive:.2f}"
+        ),
+        f"Weeks With Real Odds: {_format_week_list(diagnostics.get('weeks_with_real_odds'))}",
+        (
+            "Weeks Using Fallback Probabilities: "
+            f"{_format_week_list(diagnostics.get('weeks_using_fallback_probabilities'))}"
+        ),
+        (
+            "Average Fallback Win Probability: "
+            f"{_format_optional_rate(diagnostics.get('average_fallback_win_probability'))}"
+        ),
+        (
+            "Ownership Projection Method: "
+            f"{_format_methods(diagnostics.get('ownership_projection_methods'))}"
+        ),
     ]
     if result.ev_dollars is not None:
         lines.append(f"EV Dollars: {_format_money(result.ev_dollars)}")
-    lines.extend(
-        [
-            f"EV Multiple: {result.ev_multiple:.3f}x",
-            f"Expected Edge: {result.expected_edge:+.1%}",
-            f"Comparison: {_path_ev_comparison(result, pick, heuristic_pick)}",
-        ],
+    lines.append(
+        "EV Multiple vs Entry Fee: "
+        f"{_format_multiple_or_not_provided(result.ev_multiple_vs_entry_fee)}",
     )
+    lines.append(
+        "EV Multiple vs Baseline Fair Value: "
+        f"{_format_multiple_or_not_provided(result.ev_multiple_vs_baseline)}",
+    )
+    lines.append(
+        "Expected Edge vs Baseline: "
+        f"{_format_edge_or_not_provided(result.expected_edge_vs_baseline)}",
+    )
+    lines.append(f"Comparison: {_path_ev_comparison(result, pick, heuristic_pick)}")
     return lines
 
 
@@ -544,21 +578,46 @@ def _markdown_path_ev_summary_lines(
         return ["- Status: skipped (run with `--run-path-ev`)."]
 
     pick = _current_path_ev_pick(result, options.week)
+    diagnostics = result.diagnostics or {}
     lines = [
         f"- Best pick: {pick['team']} over {pick['opponent']}",
-        f"- Path EV estimate: {result.best_path_ev:.4%}",
+        f"- Horizon: {diagnostics.get('horizon', options.path_ev_horizon)}",
+        f"- Weeks evaluated: {diagnostics.get('number_of_weeks_evaluated', len(result.best_path))}",
+        f"- Baseline fair value: {_format_money_or_not_provided(result.baseline_value)}",
+        f"- Path EV estimate: {_format_equity_pct(result.best_path_ev)}",
+        f"- Path survival probability: {_format_rate_pct(result.path_survival_probability)}",
+        f"- Expected final survivors if alive: {result.expected_survivors_if_alive:.2f}",
+        f"- Weeks with real odds: {_format_week_list(diagnostics.get('weeks_with_real_odds'))}",
+        (
+            "- Weeks using fallback probabilities: "
+            f"{_format_week_list(diagnostics.get('weeks_using_fallback_probabilities'))}"
+        ),
+        (
+            "- Average fallback win probability: "
+            f"{_format_optional_rate(diagnostics.get('average_fallback_win_probability'))}"
+        ),
+        (
+            "- Ownership projection method: "
+            f"{_format_methods(diagnostics.get('ownership_projection_methods'))}"
+        ),
     ]
     if result.ev_dollars is not None:
         lines.append(f"- EV dollars: {_format_money(result.ev_dollars)}")
-    lines.extend(
-        [
-            f"- EV multiple: {result.ev_multiple:.3f}x",
-            f"- Expected edge: {result.expected_edge:+.1%}",
-            (
-                "- Comparison to heuristic top pick: "
-                f"{_path_ev_comparison(result, pick, heuristic_pick)}"
-            ),
-        ],
+    lines.append(
+        "- EV multiple vs entry fee: "
+        f"{_format_multiple_or_not_provided(result.ev_multiple_vs_entry_fee)}",
+    )
+    lines.append(
+        "- EV multiple vs baseline fair value: "
+        f"{_format_multiple_or_not_provided(result.ev_multiple_vs_baseline)}",
+    )
+    lines.append(
+        "- Expected edge vs baseline: "
+        f"{_format_edge_or_not_provided(result.expected_edge_vs_baseline)}",
+    )
+    lines.append(
+        "- Comparison to heuristic top pick: "
+        f"{_path_ev_comparison(result, pick, heuristic_pick)}",
     )
     return lines
 
@@ -593,7 +652,7 @@ def _path_ev_comparison(
             heuristic_path_rank = row.get("best_path_ev_rank_for_current_pick")
             if heuristic_path_ev is not None and not pd.isna(heuristic_path_ev):
                 suffix = (
-                    f"; heuristic top pick path EV {float(heuristic_path_ev):.4%}"
+                    f"; heuristic top pick path EV {_format_equity_pct(heuristic_path_ev)}"
                 )
                 if heuristic_path_rank is not None and not pd.isna(heuristic_path_rank):
                     suffix += f", path EV rank {int(heuristic_path_rank)}"
@@ -975,6 +1034,10 @@ def _validate_options(options: LiveWeekOptions) -> None:
             raise LiveWeekWorkflowError("--beam-width must be positive.")
         if options.top_k <= 0:
             raise LiveWeekWorkflowError("--top-k must be positive.")
+        if options.path_ev_horizon not in {"week", "current", "available", "full-season"}:
+            raise LiveWeekWorkflowError(
+                "--path-ev-horizon must be one of: week, current, available, full-season.",
+            )
 
 
 def _resolve_season_dir(season: int, data_dir: Path) -> Path:
@@ -1062,6 +1125,74 @@ def _relative_link(from_path: Path, to_path: Path) -> str:
 
 def _format_money(value: float) -> str:
     return f"${float(value):,.2f}"
+
+
+def _format_money_or_not_provided(value: float | None) -> str:
+    if value is None or pd.isna(value):
+        return "not provided"
+    return _format_money(float(value))
+
+
+def _format_multiple_or_not_provided(value: float | None) -> str:
+    if value is None or pd.isna(value):
+        return "not provided"
+    return f"{float(value):.3f}x"
+
+
+def _format_edge_or_not_provided(value: float | None) -> str:
+    if value is None or pd.isna(value):
+        return "not provided"
+    return f"{float(value):+.1%}"
+
+
+def _format_rate_pct(value: float) -> str:
+    numeric = float(value)
+    if numeric == 0:
+        return "0%"
+    percentage = numeric * 100
+    abs_percentage = abs(percentage)
+    if abs_percentage >= 1:
+        return f"{percentage:.1f}%"
+    if abs_percentage >= 0.01:
+        return f"{percentage:.3f}%"
+    return f"{percentage:.6f}%"
+
+
+def _format_optional_rate(value: object) -> str:
+    if value is None or pd.isna(value):
+        return "not applicable"
+    return _format_rate_pct(float(value))
+
+
+def _format_equity_pct(value: float) -> str:
+    numeric = float(value)
+    if numeric == 0:
+        return "0%"
+    percentage = numeric * 100
+    abs_percentage = abs(percentage)
+    if abs_percentage >= 0.01:
+        return f"{percentage:.4f}%"
+    if abs_percentage >= 0.0001:
+        return f"{percentage:.6f}%"
+    return f"{percentage:.8f}%"
+
+
+def _format_week_list(value: object) -> str:
+    if value is None:
+        return "none"
+    weeks = [int(week) for week in value] if isinstance(value, (list, tuple, set)) else []
+    if not weeks:
+        return "none"
+    return ", ".join(f"W{week}" for week in sorted(weeks))
+
+
+def _format_methods(value: object) -> str:
+    if not isinstance(value, dict) or not value:
+        return "unknown"
+    return ", ".join(
+        f"{method} ({count})"
+        for method, count in sorted(value.items())
+    )
 
 
 def _markdown_exposure_table(exposure: pd.DataFrame) -> str:

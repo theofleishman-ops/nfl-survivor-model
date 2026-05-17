@@ -65,10 +65,69 @@ def test_live_week_workflow_runs_path_ev_when_enabled(tmp_path):
     assert "Single-Entry Path EV:" in result.summary_text
     assert "Best Pick:" in result.summary_text
     assert "EV Dollars:" in result.summary_text
-    assert "EV Multiple:" in result.summary_text
+    assert "EV Multiple vs Entry Fee:" in result.summary_text
+    assert "EV Multiple vs Baseline Fair Value:" in result.summary_text
+    assert "Expected Edge vs Baseline:" in result.summary_text
+    assert "Weeks Evaluated: 1" in result.summary_text
+    assert "-94.0%" not in result.summary_text
     assert result.path_ev_result is not None
     assert result.path_ev_report_path.exists()
     assert result.path_ev_report_path.name == "week_1_single_entry_path_ev.md"
+    path_report = result.path_ev_report_path.read_text(encoding="utf-8")
+    assert "- Evaluation horizon: available" in path_report
+    assert "- Number of weeks evaluated: 1" in path_report
+    assert "- Weeks using fallback probabilities: none" in path_report
+    assert "Full-season projected EV" in path_report
+
+
+def test_live_path_ev_available_horizon_does_not_score_future_fallback_weeks(tmp_path):
+    workspace = _copy_fixture(tmp_path)
+    schedule_path = workspace / "schedule.csv"
+    schedule = pd.read_csv(schedule_path)
+    schedule = pd.concat(
+        [
+            schedule,
+            pd.DataFrame(
+                [
+                    {
+                        "season": 2026,
+                        "week": 2,
+                        "game_id": "2026_W02_ARI_AT_ATL",
+                        "away_team": "ARI",
+                        "home_team": "ATL",
+                        "kickoff_at": "2026-09-20T13:00:00",
+                        "game_window": "SUNDAY_EARLY",
+                    }
+                ],
+            ),
+        ],
+        ignore_index=True,
+    )
+    schedule.to_csv(schedule_path, index=False)
+
+    result = run_live_week(
+        LiveWeekOptions(
+            season=2026,
+            week=1,
+            data_dir=workspace,
+            reports_dir=tmp_path / "reports",
+            simulations=3,
+            entries=40,
+            run_path_ev=True,
+            path_ev_simulations=50,
+            beam_width=8,
+            top_k=3,
+            entry_fee=10,
+            prize_pool=50000,
+        ),
+    )
+
+    assert "Weeks Evaluated: 1" in result.summary_text
+    assert "Weeks Using Fallback Probabilities: none" in result.summary_text
+    assert "-94.0%" not in result.summary_text
+    path_report = result.path_ev_report_path.read_text(encoding="utf-8")
+    assert "Full-season projected EV" in path_report
+    assert "not evaluated for selected path" in path_report
 
 
 def test_live_week_workflow_skips_path_ev_without_flag(tmp_path):
@@ -241,8 +300,11 @@ def test_week_summary_report_includes_path_ev_metrics(tmp_path):
     assert "## Single-Entry Path EV" in report
     assert "- Path EV estimate:" in report
     assert "- EV dollars:" in report
-    assert "- EV multiple:" in report
-    assert "- Expected edge:" in report
+    assert "- EV multiple vs entry fee:" in report
+    assert "- EV multiple vs baseline fair value:" in report
+    assert "- Expected edge vs baseline:" in report
+    assert "- Weeks evaluated: 1" in report
+    assert "-94.0%" not in report
     assert "- Comparison to heuristic top pick:" in report
     assert "[Single-Entry Path EV](week_1_single_entry_path_ev.md)" in report
 

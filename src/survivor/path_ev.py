@@ -7,7 +7,7 @@ equity: average final payout share across simulated seasons for one entry.
 
 from __future__ import annotations
 
-from dataclasses import dataclass
+from dataclasses import dataclass, field
 from typing import Any
 
 import numpy as np
@@ -24,6 +24,9 @@ DEFAULT_TOP_K = 5
 DEFAULT_BEAM_WIDTH = 100
 DEFAULT_SIMULATIONS = 10000
 DEFAULT_HOME_WIN_PROBABILITY = 0.52
+DEFAULT_PATH_EV_HORIZON = "available"
+PATH_EV_HORIZONS = ("week", "current", "available", "full-season")
+REAL_PROBABILITY_SOURCES = frozenset({"no_vig_moneyline", "spread"})
 
 PATH_COLUMNS = [
     "path_id",
@@ -46,6 +49,8 @@ PATH_COLUMNS = [
 ASSUMPTIONS = (
     "Expected value is average contest equity for one survivor entry.",
     "Contest equity is modeled as 1 / total survivors when the path is alive, otherwise 0.",
+    "Path EV is estimated as path survival probability times expected equity conditional on the path surviving.",
+    "The selected entry is removed from public ownership counts for its fixed pick in each week.",
     "Winner-take-all or equal split among final survivors is assumed.",
     "Current public pick percentages are used when present.",
     "Future ownership is projected from win probability when public pick data is missing.",
@@ -72,11 +77,16 @@ class PathEVResult:
     entry_cost: float | None
     baseline_value: float | None
     ev_dollars: float | None
-    ev_multiple: float
-    expected_edge: float
+    ev_multiple: float | None
+    expected_edge: float | None
+    ev_multiple_vs_entry_fee: float | None
+    ev_multiple_vs_baseline: float | None
+    expected_edge_vs_entry_fee: float | None
+    expected_edge_vs_baseline: float | None
     survival_probability_by_week: pd.DataFrame
     expected_field_size_by_week: pd.DataFrame
     simulation_summary: dict[str, Any]
+    diagnostics: dict[str, Any]
 
 
 @dataclass(frozen=True)
@@ -97,8 +107,12 @@ class SingleEntryPathOptimizationResult:
     entry_cost: float | None
     baseline_value: float | None
     ev_dollars: float | None
-    ev_multiple: float
-    expected_edge: float
+    ev_multiple: float | None
+    expected_edge: float | None
+    ev_multiple_vs_entry_fee: float | None
+    ev_multiple_vs_baseline: float | None
+    expected_edge_vs_entry_fee: float | None
+    expected_edge_vs_baseline: float | None
     survival_probability_by_week: pd.DataFrame
     expected_field_size_by_week: pd.DataFrame
     top_paths: pd.DataFrame
@@ -106,6 +120,7 @@ class SingleEntryPathOptimizationResult:
     candidate_paths: pd.DataFrame
     evaluated_paths: pd.DataFrame
     assumptions: tuple[str, ...] = ASSUMPTIONS
+    diagnostics: dict[str, Any] = field(default_factory=dict)
 
 
 @dataclass(frozen=True)
@@ -130,7 +145,7 @@ class _PathModelData:
 class _CommonSimulation:
     weeks: list[int]
     team_wins: dict[tuple[int, str], np.ndarray]
-    public_entries_after_week: dict[int, np.ndarray]
+    public_distributions: dict[int, pd.DataFrame]
 
 
 def generate_candidate_paths(
@@ -143,6 +158,7 @@ def generate_candidate_paths(
     max_paths: int | None = None,
     top_k: int = DEFAULT_TOP_K,
     beam_width: int = DEFAULT_BEAM_WIDTH,
+    path_ev_horizon: str = DEFAULT_PATH_EV_HORIZON,
 ) -> pd.DataFrame:
     """Generate fixed survivor paths with a controlled beam search.
 
@@ -163,7 +179,8 @@ def generate_candidate_paths(
         start_week=start_week,
         pool_size=pool_size,
     )
-    if not model.weeks:
+    weeks = _resolve_horizon_weeks(model, start_week, path_ev_horizon)
+    if not weeks:
         return _empty_paths_frame()
 
     normalized_used = frozenset(str(team).strip() for team in used_teams or () if str(team).strip())
@@ -178,7 +195,7 @@ def generate_candidate_paths(
     ]
 
     public_survival_rates = _expected_public_survival_rates(model.team_probabilities)
-    for week in model.weeks:
+    for week in weeks:
         ranked = model.rankings_by_week[week]
         field_survival_rate = public_survival_rates.get(week, 0.5)
         expanded: list[_BeamPath] = []
@@ -289,12 +306,25 @@ def evaluate_path_ev(
     summary = evaluated.iloc[0].to_dict()
     evaluated_path = prepared_path.copy()
     evaluated_path["path_ev"] = float(summary["path_ev"])
-    field_with_path = field_by_week.merge(
+    path_field_by_week = field_by_week[
+        field_by_week["path_id"].astype(int) == int(summary["path_id"])
+    ].copy()
+    field_with_path = path_field_by_week.merge(
         survival_by_week[
-            ["week", "path_survival_probability", "expected_total_entries"]
+            ["week", "path_survival_probability"]
         ],
         on="week",
         how="left",
+    ).drop(columns=["path_id"], errors="ignore")
+    diagnostics = _build_path_diagnostics(
+        path=prepared_path,
+        model=model,
+        horizon="explicit-path",
+        start_week=start_week,
+        pool_size=pool_size,
+        entry_fee=entry_fee,
+        prize_pool=prize_pool,
+        simulations=simulations,
     )
 
     return PathEVResult(
@@ -312,8 +342,12 @@ def evaluate_path_ev(
         entry_cost=_optional_float(summary["entry_cost"]),
         baseline_value=_optional_float(summary["baseline_value"]),
         ev_dollars=_optional_float(summary["ev_dollars"]),
-        ev_multiple=float(summary["ev_multiple"]),
-        expected_edge=float(summary["expected_edge"]),
+        ev_multiple=_optional_float(summary["ev_multiple"]),
+        expected_edge=_optional_float(summary["expected_edge"]),
+        ev_multiple_vs_entry_fee=_optional_float(summary["ev_multiple_vs_entry_fee"]),
+        ev_multiple_vs_baseline=_optional_float(summary["ev_multiple_vs_baseline"]),
+        expected_edge_vs_entry_fee=_optional_float(summary["expected_edge_vs_entry_fee"]),
+        expected_edge_vs_baseline=_optional_float(summary["expected_edge_vs_baseline"]),
         survival_probability_by_week=survival_by_week.drop(columns=["path_id"], errors="ignore"),
         expected_field_size_by_week=field_with_path,
         simulation_summary={
@@ -322,6 +356,7 @@ def evaluate_path_ev(
             "start_week": int(min(weeks)),
             "end_week": int(max(weeks)),
         },
+        diagnostics=diagnostics,
     )
 
 
@@ -339,6 +374,7 @@ def optimize_single_entry_path(
     beam_width: int = DEFAULT_BEAM_WIDTH,
     entry_fee: float | None = None,
     prize_pool: float | None = None,
+    path_ev_horizon: str = DEFAULT_PATH_EV_HORIZON,
 ) -> SingleEntryPathOptimizationResult:
     """Find the single-entry path with the highest simulated contest equity."""
     _validate_positive_int("simulations", simulations)
@@ -354,6 +390,7 @@ def optimize_single_entry_path(
         max_paths=max_paths,
         top_k=top_k,
         beam_width=beam_width,
+        path_ev_horizon=path_ev_horizon,
     )
     if candidate_paths.empty:
         raise ValueError("No candidate paths were generated.")
@@ -367,6 +404,7 @@ def optimize_single_entry_path(
     )
     prepared_paths = _prepare_paths_for_evaluation(candidate_paths, model.team_probabilities)
     weeks = sorted(prepared_paths["week"].astype(int).unique().tolist())
+    horizon = _normalize_path_ev_horizon(path_ev_horizon)
     simulation = _simulate_common_seasons(
         model=model,
         weeks=weeks,
@@ -394,20 +432,42 @@ def optimize_single_entry_path(
     best_path["path_ev"] = float(best["path_ev"])
     best_path["path_ev_rank"] = 1
     best_survival = survival_by_week[survival_by_week["path_id"].astype(int) == best_path_id].copy()
-    best_field = field_by_week.merge(
+    best_field_by_week = field_by_week[
+        field_by_week["path_id"].astype(int) == best_path_id
+    ].copy()
+    best_field = best_field_by_week.merge(
         best_survival[["week", "path_survival_probability"]],
         on="week",
         how="left",
-    )
-    best_field["expected_total_entries"] = (
-        best_field["expected_public_entries"] + best_field["path_survival_probability"]
-    )
+    ).drop(columns=["path_id"], errors="ignore")
     heuristic_comparison = _build_heuristic_comparison(
         start_week=start_week,
         rankings=model.rankings_by_week.get(int(start_week), pd.DataFrame()),
         evaluated_paths=evaluated_paths,
         prepared_paths=prepared_paths,
         best_path_id=best_path_id,
+    )
+    diagnostics = _build_path_diagnostics(
+        path=best_path,
+        model=model,
+        horizon=horizon,
+        start_week=start_week,
+        pool_size=pool_size,
+        entry_fee=entry_fee,
+        prize_pool=prize_pool,
+        simulations=simulations,
+    )
+    diagnostics["horizon_comparison"] = _build_horizon_comparison(
+        path=best_path,
+        model=model,
+        selected_horizon=horizon,
+        start_week=start_week,
+        pool_size=pool_size,
+        simulations=simulations,
+        random_seed=random_seed,
+        entry_fee=entry_fee,
+        prize_pool=prize_pool,
+        primary_summary=best.to_dict(),
     )
 
     return SingleEntryPathOptimizationResult(
@@ -425,14 +485,19 @@ def optimize_single_entry_path(
         entry_cost=_optional_float(best["entry_cost"]),
         baseline_value=_optional_float(best["baseline_value"]),
         ev_dollars=_optional_float(best["ev_dollars"]),
-        ev_multiple=float(best["ev_multiple"]),
-        expected_edge=float(best["expected_edge"]),
+        ev_multiple=_optional_float(best["ev_multiple"]),
+        expected_edge=_optional_float(best["expected_edge"]),
+        ev_multiple_vs_entry_fee=_optional_float(best["ev_multiple_vs_entry_fee"]),
+        ev_multiple_vs_baseline=_optional_float(best["ev_multiple_vs_baseline"]),
+        expected_edge_vs_entry_fee=_optional_float(best["expected_edge_vs_entry_fee"]),
+        expected_edge_vs_baseline=_optional_float(best["expected_edge_vs_baseline"]),
         survival_probability_by_week=best_survival.drop(columns=["path_id"], errors="ignore").reset_index(drop=True),
         expected_field_size_by_week=best_field.reset_index(drop=True),
         top_paths=evaluated_paths,
         heuristic_comparison=heuristic_comparison,
         candidate_paths=candidate_paths,
         evaluated_paths=evaluated_paths,
+        diagnostics=diagnostics,
     )
 
 
@@ -474,6 +539,267 @@ def _prepare_path_model_data(
         rankings_by_week=rankings_by_week,
         weeks=weeks,
     )
+
+
+def _normalize_path_ev_horizon(value: str) -> str:
+    horizon = str(value).strip().lower().replace("_", "-")
+    if horizon == "current":
+        return "week"
+    if horizon in {"full", "season", "fullseason"}:
+        return "full-season"
+    if horizon not in {"week", "available", "full-season", "explicit-path"}:
+        choices = ", ".join(PATH_EV_HORIZONS)
+        raise ValueError(f"path_ev_horizon must be one of: {choices}.")
+    return horizon
+
+
+def _resolve_horizon_weeks(
+    model: _PathModelData,
+    start_week: int,
+    path_ev_horizon: str,
+) -> list[int]:
+    horizon = _normalize_path_ev_horizon(path_ev_horizon)
+    eligible_weeks = [
+        int(week)
+        for week in model.weeks
+        if int(week) >= int(start_week)
+    ]
+    if horizon == "full-season":
+        return eligible_weeks
+    if horizon == "week":
+        return eligible_weeks[:1]
+    if horizon == "available":
+        available = _available_odds_weeks(model, start_week)
+        return available or eligible_weeks[:1]
+    return eligible_weeks
+
+
+def _available_odds_weeks(model: _PathModelData, start_week: int) -> list[int]:
+    weeks: list[int] = []
+    for week in model.weeks:
+        if int(week) < int(start_week):
+            continue
+        if not _week_has_real_odds(model.team_probabilities, int(week)):
+            break
+        weeks.append(int(week))
+    return weeks
+
+
+def _week_has_real_odds(team_probabilities: pd.DataFrame, week: int) -> bool:
+    week_rows = team_probabilities[
+        team_probabilities["week"].astype(int) == int(week)
+    ].copy()
+    if week_rows.empty:
+        return False
+    sources = week_rows["probability_source"].astype(str).str.lower()
+    return bool(sources.isin(REAL_PROBABILITY_SOURCES).all())
+
+
+def _build_path_diagnostics(
+    *,
+    path: pd.DataFrame,
+    model: _PathModelData,
+    horizon: str,
+    start_week: int,
+    pool_size: int,
+    entry_fee: float | None,
+    prize_pool: float | None,
+    simulations: int,
+) -> dict[str, Any]:
+    path_df = path.sort_values("week").reset_index(drop=True).copy()
+    weeks = [int(week) for week in path_df["week"].astype(int).tolist()]
+    sources = path_df.get("probability_source", pd.Series(dtype=object)).astype(str).str.lower()
+    fallback_mask = ~sources.isin(REAL_PROBABILITY_SOURCES)
+    fallback_rows = path_df[fallback_mask].copy()
+    ownership_methods = _value_counts_dict(path_df, "public_pick_source")
+    baseline_fair_value = (
+        float(prize_pool) / float(pool_size)
+        if prize_pool is not None and float(pool_size) > 0
+        else None
+    )
+    return {
+        "horizon": horizon,
+        "number_of_weeks_evaluated": len(weeks),
+        "weeks_evaluated": weeks,
+        "weeks_with_real_odds": [
+            int(row["week"])
+            for row in path_df.loc[~fallback_mask, ["week"]].to_dict("records")
+        ],
+        "weeks_using_fallback_probabilities": sorted(
+            fallback_rows["week"].astype(int).unique().tolist(),
+        ),
+        "average_fallback_win_probability": (
+            float(fallback_rows["win_probability"].astype(float).mean())
+            if not fallback_rows.empty
+            else None
+        ),
+        "fallback_probability_sources": _value_counts_dict(fallback_rows, "probability_source"),
+        "ownership_projection_methods": ownership_methods,
+        "available_odds_weeks": _available_odds_weeks(model, start_week),
+        "full_season_weeks": [
+            int(week)
+            for week in model.weeks
+            if int(week) >= int(start_week)
+        ],
+        "baseline_fair_value": baseline_fair_value,
+        "entry_fee": float(entry_fee) if entry_fee is not None else None,
+        "prize_pool": float(prize_pool) if prize_pool is not None else None,
+        "pool_size": int(pool_size),
+        "simulations": int(simulations),
+    }
+
+
+def _build_horizon_comparison(
+    *,
+    path: pd.DataFrame,
+    model: _PathModelData,
+    selected_horizon: str,
+    start_week: int,
+    pool_size: int,
+    simulations: int,
+    random_seed: int | None,
+    entry_fee: float | None,
+    prize_pool: float | None,
+    primary_summary: dict[str, Any],
+) -> list[dict[str, Any]]:
+    path_weeks = set(path["week"].astype(int).tolist())
+    specs = [
+        ("Current-week EV", "week", _resolve_horizon_weeks(model, start_week, "week")),
+        (
+            "Available-odds horizon EV",
+            "available",
+            _resolve_horizon_weeks(model, start_week, "available"),
+        ),
+        (
+            "Full-season projected EV",
+            "full-season",
+            _resolve_horizon_weeks(model, start_week, "full-season"),
+        ),
+    ]
+    rows: list[dict[str, Any]] = []
+    for label, horizon, weeks in specs:
+        if not weeks:
+            rows.append(_empty_horizon_row(label, horizon, weeks, "no weeks available"))
+            continue
+        if not set(weeks).issubset(path_weeks):
+            note = (
+                "not evaluated for selected path; run with "
+                f"--path-ev-horizon {horizon} to optimize this horizon"
+            )
+            rows.append(_empty_horizon_row(label, horizon, weeks, note))
+            continue
+        if horizon == selected_horizon and set(weeks) == path_weeks:
+            summary = primary_summary
+        else:
+            summary = _evaluate_path_for_weeks(
+                path=path,
+                model=model,
+                weeks=weeks,
+                pool_size=pool_size,
+                simulations=simulations,
+                random_seed=random_seed,
+                entry_fee=entry_fee,
+                prize_pool=prize_pool,
+            )
+        rows.append(_horizon_row(label, horizon, weeks, summary))
+    return rows
+
+
+def _evaluate_path_for_weeks(
+    *,
+    path: pd.DataFrame,
+    model: _PathModelData,
+    weeks: list[int],
+    pool_size: int,
+    simulations: int,
+    random_seed: int | None,
+    entry_fee: float | None,
+    prize_pool: float | None,
+) -> dict[str, Any]:
+    subset = path[path["week"].astype(int).isin(set(weeks))].copy()
+    prepared = _prepare_paths_for_evaluation(subset, model.team_probabilities)
+    simulation = _simulate_common_seasons(
+        model=model,
+        weeks=weeks,
+        pool_size=pool_size,
+        simulations=simulations,
+        random_seed=random_seed,
+    )
+    evaluated, _, _ = _evaluate_prepared_paths(
+        paths=prepared,
+        simulation=simulation,
+        simulations=simulations,
+        pool_size=pool_size,
+        entry_fee=entry_fee,
+        prize_pool=prize_pool,
+    )
+    return evaluated.iloc[0].to_dict()
+
+
+def _horizon_row(
+    label: str,
+    horizon: str,
+    weeks: list[int],
+    summary: dict[str, Any],
+) -> dict[str, Any]:
+    return {
+        "label": label,
+        "horizon": horizon,
+        "status": "evaluated",
+        "weeks_evaluated": len(weeks),
+        "path_ev": _optional_float(summary.get("path_ev")),
+        "ev_dollars": _optional_float(summary.get("ev_dollars")),
+        "ev_multiple_vs_entry_fee": _optional_float(
+            summary.get("ev_multiple_vs_entry_fee"),
+        ),
+        "ev_multiple_vs_baseline": _optional_float(
+            summary.get("ev_multiple_vs_baseline"),
+        ),
+        "expected_edge_vs_baseline": _optional_float(
+            summary.get("expected_edge_vs_baseline"),
+        ),
+        "path_survival_probability": _optional_float(
+            summary.get("path_survival_probability"),
+        ),
+        "expected_survivors_if_alive": _optional_float(
+            summary.get("expected_survivors_if_alive"),
+        ),
+        "note": "",
+    }
+
+
+def _empty_horizon_row(
+    label: str,
+    horizon: str,
+    weeks: list[int],
+    note: str,
+) -> dict[str, Any]:
+    return {
+        "label": label,
+        "horizon": horizon,
+        "status": "not evaluated",
+        "weeks_evaluated": len(weeks),
+        "path_ev": None,
+        "ev_dollars": None,
+        "ev_multiple_vs_entry_fee": None,
+        "ev_multiple_vs_baseline": None,
+        "expected_edge_vs_baseline": None,
+        "path_survival_probability": None,
+        "expected_survivors_if_alive": None,
+        "note": note,
+    }
+
+
+def _value_counts_dict(df: pd.DataFrame, column: str) -> dict[str, int]:
+    if df.empty or column not in df.columns:
+        return {}
+    values = df[column].dropna().astype(str)
+    if values.empty:
+        return {}
+    return {
+        str(key): int(value)
+        for key, value in values.value_counts().sort_index().items()
+    }
 
 
 def _prepare_schedule(schedule_df: pd.DataFrame) -> pd.DataFrame:
@@ -913,8 +1239,6 @@ def _simulate_common_seasons(
 ) -> _CommonSimulation:
     rng = np.random.default_rng(random_seed)
     team_wins: dict[tuple[int, str], np.ndarray] = {}
-    public_entries_after_week: dict[int, np.ndarray] = {}
-    public_entries = np.full(simulations, max(int(pool_size) - 1, 0), dtype=np.int64)
     distributions = _public_distributions(model.team_probabilities)
 
     for week in weeks:
@@ -933,19 +1257,14 @@ def _simulate_common_seasons(
             team_wins[(int(week), team_a)] = a_wins
             team_wins[(int(week), team_b)] = ~a_wins
 
-        distribution = distributions[int(week)]
-        survival_probability = np.zeros(simulations, dtype=float)
-        for row in distribution.to_dict("records"):
-            wins = team_wins[(int(week), str(row["team"]))]
-            survival_probability += float(row["pick_probability"]) * wins.astype(float)
-        survival_probability = np.clip(survival_probability, 0.0, 1.0)
-        public_entries = rng.binomial(public_entries, survival_probability).astype(np.int64)
-        public_entries_after_week[int(week)] = public_entries.copy()
-
     return _CommonSimulation(
         weeks=[int(week) for week in weeks],
         team_wins=team_wins,
-        public_entries_after_week=public_entries_after_week,
+        public_distributions={
+            int(week): distributions[int(week)]
+            for week in weeks
+            if int(week) in distributions
+        },
     )
 
 
@@ -960,34 +1279,53 @@ def _evaluate_prepared_paths(
 ) -> tuple[pd.DataFrame, pd.DataFrame, pd.DataFrame]:
     summaries: list[dict[str, Any]] = []
     survival_rows: list[dict[str, Any]] = []
+    field_rows: list[dict[str, Any]] = []
 
     for path_id, path in paths.groupby("path_id", sort=True):
         ordered = path.sort_values("week").reset_index(drop=True)
-        alive = np.ones(simulations, dtype=bool)
+        path_survival_probability = 1.0
+        public_entries_if_alive = np.full(
+            simulations,
+            max(float(pool_size) - 1.0, 0.0),
+            dtype=float,
+        )
         for row in ordered.to_dict("records"):
             week = int(row["week"])
             team = str(row["team"])
-            alive = alive & simulation.team_wins[(week, team)]
-            public_after = simulation.public_entries_after_week[week]
+            game_id = str(row["game_id"])
+            path_survival_probability *= float(row["win_probability"])
+            public_entries_if_alive = _advance_public_entries_conditional_on_path(
+                public_entries_before=public_entries_if_alive,
+                distribution=simulation.public_distributions[week],
+                simulation=simulation,
+                week=week,
+                selected_team=team,
+                selected_game_id=game_id,
+            )
+            expected_public_entries = float(public_entries_if_alive.mean())
+            expected_total_entries = expected_public_entries + 1.0
             survival_rows.append(
                 {
                     "path_id": int(path_id),
                     "week": week,
-                    "path_survival_probability": float(alive.mean()),
-                    "expected_public_entries": float(public_after.mean()),
-                    "expected_total_entries": float(public_after.mean() + alive.mean()),
+                    "path_survival_probability": float(path_survival_probability),
+                },
+            )
+            field_rows.append(
+                {
+                    "path_id": int(path_id),
+                    "week": week,
+                    "expected_public_entries": expected_public_entries,
+                    "expected_total_entries": expected_total_entries,
                 },
             )
 
-        final_week = int(ordered["week"].max())
-        final_public = simulation.public_entries_after_week[final_week]
-        total_survivors = final_public + alive.astype(np.int64)
-        equity = np.where(alive, 1.0 / np.maximum(total_survivors, 1), 0.0)
-        path_ev = float(equity.mean())
-        survival_probability = float(alive.mean())
-        expected_survivors_if_alive = (
-            float(total_survivors[alive].mean()) if bool(alive.any()) else 0.0
-        )
+        final_public_entries = public_entries_if_alive
+        total_survivors_if_alive = final_public_entries + 1.0
+        equity_if_alive = 1.0 / np.maximum(total_survivors_if_alive, 1.0)
+        expected_equity_if_alive = float(equity_if_alive.mean())
+        path_ev = float(path_survival_probability * expected_equity_if_alive)
+        expected_survivors_if_alive = float(total_survivors_if_alive.mean())
         estimated_path_ev = _last_numeric(ordered, "estimated_path_ev")
         value_metrics = _value_metrics(
             path_ev=path_ev,
@@ -1003,13 +1341,11 @@ def _evaluate_prepared_paths(
                 "first_team": str(ordered.iloc[0]["team"]),
                 "path_ev": path_ev,
                 "expected_contest_equity": path_ev,
-                "path_survival_probability": survival_probability,
-                "expected_final_field_size": float(total_survivors.mean()),
-                "expected_final_public_entries": float(final_public.mean()),
+                "path_survival_probability": float(path_survival_probability),
+                "expected_final_field_size": expected_survivors_if_alive,
+                "expected_final_public_entries": float(final_public_entries.mean()),
                 "expected_survivors_if_alive": expected_survivors_if_alive,
-                "expected_equity_if_alive": path_ev / survival_probability
-                if survival_probability > 0
-                else 0.0,
+                "expected_equity_if_alive": expected_equity_if_alive,
                 **value_metrics,
                 "estimated_path_ev": estimated_path_ev,
                 "cumulative_survival_probability": _last_numeric(
@@ -1019,13 +1355,6 @@ def _evaluate_prepared_paths(
             },
         )
 
-    field_rows = [
-        {
-            "week": int(week),
-            "expected_public_entries": float(entries.mean()),
-        }
-        for week, entries in simulation.public_entries_after_week.items()
-    ]
     evaluated = pd.DataFrame(summaries).sort_values(
         ["path_ev", "path_survival_probability", "estimated_path_ev"],
         ascending=[False, False, False],
@@ -1033,15 +1362,62 @@ def _evaluate_prepared_paths(
     survival_by_week = pd.DataFrame(survival_rows).sort_values(
         ["path_id", "week"],
     ).reset_index(drop=True)
-    field_by_week = pd.DataFrame(field_rows).sort_values("week").reset_index(drop=True)
+    field_by_week = pd.DataFrame(field_rows).sort_values(
+        ["path_id", "week"],
+    ).reset_index(drop=True)
     return evaluated, survival_by_week, field_by_week
+
+
+def _advance_public_entries_conditional_on_path(
+    *,
+    public_entries_before: np.ndarray,
+    distribution: pd.DataFrame,
+    simulation: _CommonSimulation,
+    week: int,
+    selected_team: str,
+    selected_game_id: str,
+) -> np.ndarray:
+    teams = distribution["team"].astype(str).tolist()
+    probabilities = distribution["pick_probability"].astype(float).to_numpy()
+    counts = probabilities[:, np.newaxis] * (public_entries_before[np.newaxis, :] + 1.0)
+
+    selected_indices = [index for index, team in enumerate(teams) if team == selected_team]
+    if selected_indices:
+        selected_index = selected_indices[0]
+        counts[selected_index] = counts[selected_index] - 1.0
+        deficit = np.maximum(-counts[selected_index], 0.0)
+        counts[selected_index] = np.maximum(counts[selected_index], 0.0)
+        if bool(np.any(deficit > 0)):
+            other_indices = [index for index in range(len(teams)) if index != selected_index]
+            if other_indices:
+                other_total = counts[other_indices].sum(axis=0)
+                target_other_total = np.maximum(other_total - deficit, 0.0)
+                scale = np.divide(
+                    target_other_total,
+                    other_total,
+                    out=np.zeros_like(other_total),
+                    where=other_total > 0,
+                )
+                counts[other_indices] = counts[other_indices] * scale
+
+    survivors = np.zeros_like(public_entries_before, dtype=float)
+    game_ids = distribution["game_id"].astype(str).tolist()
+    for index, team in enumerate(teams):
+        if team == selected_team:
+            wins = np.ones_like(public_entries_before, dtype=bool)
+        elif game_ids[index] == selected_game_id:
+            wins = np.zeros_like(public_entries_before, dtype=bool)
+        else:
+            wins = simulation.team_wins[(int(week), team)]
+        survivors += np.where(wins, counts[index], 0.0)
+    return survivors
 
 
 def _public_distributions(team_probabilities: pd.DataFrame) -> dict[int, pd.DataFrame]:
     distributions: dict[int, pd.DataFrame] = {}
     for week, week_df in team_probabilities.groupby("week", sort=True):
         distribution = week_df[
-            ["week", "team", "win_probability", "projected_public_pick_pct"]
+            ["week", "game_id", "team", "win_probability", "projected_public_pick_pct"]
         ].copy()
         weights = distribution["projected_public_pick_pct"].astype(float).clip(lower=0)
         total_weight = float(weights.sum())
@@ -1173,26 +1549,58 @@ def _value_metrics(
     prize_pool: float | None,
 ) -> dict[str, float | None]:
     baseline_contest_equity = 1.0 / float(pool_size)
-    inferred_entry_cost = (
-        float(entry_fee)
-        if entry_fee is not None
-        else (float(prize_pool) / float(pool_size) if prize_pool is not None else None)
+    entry_cost = float(entry_fee) if entry_fee is not None else None
+    baseline_value = (
+        float(prize_pool) / float(pool_size)
+        if prize_pool is not None
+        else None
     )
     ev_dollars = float(path_ev) * float(prize_pool) if prize_pool is not None else None
-    ev_multiple = (
-        ev_dollars / inferred_entry_cost
-        if ev_dollars is not None and inferred_entry_cost not in {None, 0}
-        else float(path_ev) / baseline_contest_equity
+    ev_multiple_vs_entry_fee = (
+        ev_dollars / entry_cost
+        if ev_dollars is not None and entry_cost not in {None, 0}
+        else None
+    )
+    ev_multiple_vs_baseline = (
+        ev_dollars / baseline_value
+        if ev_dollars is not None and baseline_value not in {None, 0}
+        else None
+    )
+    expected_edge_vs_entry_fee = (
+        ev_multiple_vs_entry_fee - 1.0
+        if ev_multiple_vs_entry_fee is not None
+        else None
+    )
+    expected_edge_vs_baseline = (
+        ev_multiple_vs_baseline - 1.0
+        if ev_multiple_vs_baseline is not None
+        else None
     )
     return {
         "baseline_contest_equity": baseline_contest_equity,
         "entry_fee": float(entry_fee) if entry_fee is not None else None,
         "prize_pool": float(prize_pool) if prize_pool is not None else None,
-        "entry_cost": inferred_entry_cost,
-        "baseline_value": inferred_entry_cost,
+        "entry_cost": entry_cost,
+        "baseline_value": baseline_value,
         "ev_dollars": ev_dollars,
-        "ev_multiple": float(ev_multiple),
-        "expected_edge": float(ev_multiple - 1.0),
+        "ev_multiple": float(ev_multiple_vs_entry_fee)
+        if ev_multiple_vs_entry_fee is not None
+        else None,
+        "expected_edge": float(expected_edge_vs_entry_fee)
+        if expected_edge_vs_entry_fee is not None
+        else None,
+        "ev_multiple_vs_entry_fee": float(ev_multiple_vs_entry_fee)
+        if ev_multiple_vs_entry_fee is not None
+        else None,
+        "ev_multiple_vs_baseline": float(ev_multiple_vs_baseline)
+        if ev_multiple_vs_baseline is not None
+        else None,
+        "expected_edge_vs_entry_fee": float(expected_edge_vs_entry_fee)
+        if expected_edge_vs_entry_fee is not None
+        else None,
+        "expected_edge_vs_baseline": float(expected_edge_vs_baseline)
+        if expected_edge_vs_baseline is not None
+        else None,
     }
 
 
