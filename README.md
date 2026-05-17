@@ -21,7 +21,10 @@ Phase 11 adds a single-command live weekly workflow for validation, rankings,
 simulations, portfolio allocation, and markdown report indexing. Phase 12 adds
 a true single-entry path EV optimizer that maximizes simulated contest equity
 while keeping the heuristic weekly ranking as a diagnostic comparison. It does
-not scrape websites or build a dashboard.
+not scrape websites or build a dashboard. Phase 13 integrates that path EV
+optimizer into the live weekly workflow so the operator summary shows the
+heuristic top pick, path EV top pick, portfolio allocation, and dollar EV
+metrics when contest economics are provided.
 
 The real 2026 schedule is included. No real odds, real pool data, secrets, API
 keys, raw API responses, or scraping code are included.
@@ -165,7 +168,8 @@ data/raw/templates/
 `scripts/run_live_week.py` is the operator-facing weekly command. It validates
 the schedule and current-week joins, optionally refreshes odds, optionally
 imports manual public-pick files, runs rankings, runs simulations, optimizes the
-entry portfolio, writes markdown reports, and prints a concise summary.
+entry portfolio, optionally runs the single-entry path EV optimizer, writes
+markdown reports, and prints a concise summary.
 
 Common runs:
 
@@ -173,6 +177,7 @@ Common runs:
 python scripts/run_live_week.py --season 2026 --week 1
 python scripts/run_live_week.py --season 2026 --week 1 --refresh-odds
 python scripts/run_live_week.py --season 2026 --week 1 --refresh-odds --simulations 10000 --entries 40
+python scripts/run_live_week.py --season 2026 --week 1 --run-path-ev --path-ev-simulations 5000 --beam-width 100 --top-k 5 --entry-fee 10 --prize-pool 50000
 ```
 
 Dry-run validation and calculation without writing imported data or reports:
@@ -189,9 +194,10 @@ The expected weekly process is:
 3. Import public picks with `--public-picks-input`, or import them separately
    with `scripts/import_public_picks.py --aggregate`.
 4. Run `scripts/run_live_week.py` with the final simulation count, entry count,
-   and aggression mode.
+   aggression mode, and `--run-path-ev` if you want the true single-entry
+   path EV pick in the weekly command center.
 5. Review `outputs/reports/week_1_summary.md`, then the linked rankings,
-   simulation, and portfolio reports.
+   simulation, portfolio, and optional path EV reports.
 
 Refresh odds through The Odds API:
 
@@ -213,10 +219,15 @@ outputs/reports/week_1_summary.md
 outputs/reports/week_1_report.md
 outputs/reports/week_1_simulation_report.md
 outputs/reports/week_1_portfolio_report.md
+outputs/reports/week_1_single_entry_path_ev.md  # when --run-path-ev is used
 ```
 
-The summary report is an index that links the rankings, simulation, and
-portfolio reports. The terminal summary calls out missing files, malformed
+The summary report is an index that links the rankings, simulation, portfolio,
+and optional path EV reports. Path EV is skipped unless `--run-path-ev` is set;
+the summary says skipped instead of failing. When enabled, the summary includes
+the path EV best pick, path EV estimate, EV multiple, expected edge, and a
+comparison to the heuristic top pick. Add `--entry-fee` and `--prize-pool` to
+also show EV dollars. The terminal summary calls out missing files, malformed
 game IDs, missing current-week odds, invalid probabilities, missing public
 picks, and missing API keys with a concrete fix.
 

@@ -35,10 +35,59 @@ def test_successful_live_week_workflow_uses_real_week_fixture(tmp_path):
     assert "Schedule: OK (16 games)" in result.summary_text
     assert "Odds: OK (16 games, 1 sportsbook, local)" in result.summary_text
     assert "Public Picks: OK (1 source, local)" in result.summary_text
+    assert "Path EV: skipped" in result.summary_text
     assert result.rankings_report_path.exists()
     assert result.simulation_report_path.exists()
     assert result.portfolio_report_path.exists()
+    assert result.path_ev_report_path is None
     assert result.summary_report_path.exists()
+
+
+def test_live_week_workflow_runs_path_ev_when_enabled(tmp_path):
+    result = run_live_week(
+        LiveWeekOptions(
+            season=2026,
+            week=1,
+            data_dir=FIXTURE_DIR,
+            reports_dir=tmp_path / "reports",
+            simulations=3,
+            entries=40,
+            run_path_ev=True,
+            path_ev_simulations=50,
+            beam_width=8,
+            top_k=3,
+            entry_fee=10,
+            prize_pool=50000,
+        ),
+    )
+
+    assert "Path EV: generated" in result.summary_text
+    assert "Single-Entry Path EV:" in result.summary_text
+    assert "Best Pick:" in result.summary_text
+    assert "EV Dollars:" in result.summary_text
+    assert "EV Multiple:" in result.summary_text
+    assert result.path_ev_result is not None
+    assert result.path_ev_report_path.exists()
+    assert result.path_ev_report_path.name == "week_1_single_entry_path_ev.md"
+
+
+def test_live_week_workflow_skips_path_ev_without_flag(tmp_path):
+    result = run_live_week(
+        LiveWeekOptions(
+            season=2026,
+            week=1,
+            data_dir=FIXTURE_DIR,
+            reports_dir=tmp_path / "reports",
+            simulations=3,
+            entries=40,
+            run_path_ev=False,
+        ),
+    )
+
+    assert "Path EV: skipped" in result.summary_text
+    assert "skipped (use --run-path-ev)" in result.summary_text
+    assert result.path_ev_result is None
+    assert result.path_ev_report_path is None
 
 
 def test_missing_odds_failure_is_actionable(tmp_path):
@@ -170,6 +219,34 @@ def test_week_summary_report_links_generated_reports(tmp_path):
     assert "[Portfolio](week_1_portfolio_report.md)" in report
 
 
+def test_week_summary_report_includes_path_ev_metrics(tmp_path):
+    result = run_live_week(
+        LiveWeekOptions(
+            season=2026,
+            week=1,
+            data_dir=FIXTURE_DIR,
+            reports_dir=tmp_path / "reports",
+            simulations=3,
+            entries=40,
+            run_path_ev=True,
+            path_ev_simulations=50,
+            beam_width=8,
+            top_k=3,
+            entry_fee=10,
+            prize_pool=50000,
+        ),
+    )
+
+    report = result.summary_report_path.read_text(encoding="utf-8")
+    assert "## Single-Entry Path EV" in report
+    assert "- Path EV estimate:" in report
+    assert "- EV dollars:" in report
+    assert "- EV multiple:" in report
+    assert "- Expected edge:" in report
+    assert "- Comparison to heuristic top pick:" in report
+    assert "[Single-Entry Path EV](week_1_single_entry_path_ev.md)" in report
+
+
 def test_api_refresh_skip_does_not_call_provider(tmp_path):
     workspace = _copy_fixture(tmp_path)
 
@@ -240,12 +317,24 @@ def test_cli_smoke_runs_live_week(tmp_path, capsys):
             "2",
             "--entries",
             "40",
+            "--run-path-ev",
+            "--path-ev-simulations",
+            "20",
+            "--beam-width",
+            "8",
+            "--top-k",
+            "3",
+            "--entry-fee",
+            "10",
+            "--prize-pool",
+            "50000",
         ],
     )
 
     stdout = capsys.readouterr().out
     assert result == 0
     assert "NFL Survivor Week 1 Summary" in stdout
+    assert "Path EV: generated" in stdout
 
 
 def _copy_fixture(tmp_path: Path) -> Path:

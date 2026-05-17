@@ -28,6 +28,13 @@ from survivor.odds_ingestion import (
 )
 from survivor.odds_providers.the_odds_api import API_KEY_ENV_VAR, TheOddsAPIProvider
 from survivor.optimizer import rank_weekly_picks
+from survivor.path_ev import (
+    DEFAULT_BEAM_WIDTH,
+    DEFAULT_TOP_K,
+    SingleEntryPathOptimizationResult,
+    optimize_single_entry_path,
+)
+from survivor.path_ev_reports import write_single_entry_path_ev_report
 from survivor.portfolio import optimize_portfolio_for_week
 from survivor.portfolio_reports import write_portfolio_report
 from survivor.public_pick_ingestion import (
@@ -67,6 +74,12 @@ class LiveWeekOptions:
     public_pick_format: str | None = None
     public_pick_source: str = "manual_import"
     aggregate_public_picks: bool = True
+    run_path_ev: bool = False
+    path_ev_simulations: int | None = None
+    beam_width: int = DEFAULT_BEAM_WIDTH
+    top_k: int = DEFAULT_TOP_K
+    entry_fee: float | None = None
+    prize_pool: float | None = None
     dry_run: bool = False
 
 
@@ -92,10 +105,12 @@ class LiveWeekResult:
     rankings_report_path: Path | None
     simulation_report_path: Path | None
     portfolio_report_path: Path | None
+    path_ev_report_path: Path | None
     summary_report_path: Path | None
     rankings: pd.DataFrame
     portfolio_exposure: pd.DataFrame
     portfolio_metrics: dict[str, Any]
+    path_ev_result: SingleEntryPathOptimizationResult | None
 
 
 class LiveWeekWorkflowError(RuntimeError):
@@ -225,6 +240,46 @@ def run_live_week(
         _portfolio_status_detail(metrics, options),
     )
 
+    path_ev_result: SingleEntryPathOptimizationResult | None = None
+    path_ev_report_path: Path | None = None
+    if options.run_path_ev:
+        used_teams = _single_entry_used_teams(entries_df, options.week)
+        try:
+            path_ev_result = optimize_single_entry_path(
+                schedule_df=schedule_df,
+                odds_df=model_odds_df,
+                public_picks_df=public_picks_df,
+                start_week=options.week,
+                used_teams=used_teams,
+                pool_size=options.pool_size,
+                simulations=_effective_path_ev_simulations(options),
+                random_seed=options.seed,
+                top_k=options.top_k,
+                beam_width=options.beam_width,
+                entry_fee=options.entry_fee,
+                prize_pool=options.prize_pool,
+            )
+        except Exception as exc:
+            raise LiveWeekWorkflowError(
+                f"Single-entry path EV optimization failed:\n{exc}\n"
+                "How to fix: verify the current schedule, odds, public picks, "
+                "pool size, beam width, top-k, and simulation count.",
+            ) from exc
+
+        if not options.dry_run:
+            path_ev_report_path = write_single_entry_path_ev_report(
+                path_ev_result,
+                week=options.week,
+                output_dir=options.reports_dir,
+            )
+        path_ev_status = StepStatus(
+            "Path EV",
+            "dry run" if options.dry_run else "generated",
+            _path_ev_status_detail(path_ev_result, options),
+        )
+    else:
+        path_ev_status = StepStatus("Path EV", "skipped", "use --run-path-ev")
+
     statuses = (
         schedule_status,
         odds_status,
@@ -232,17 +287,20 @@ def run_live_week(
         rankings_status,
         simulation_status,
         portfolio_status,
+        path_ev_status,
     )
     report_paths = {
         "rankings": rankings_report_path,
         "simulation": simulation_report_path,
         "portfolio": portfolio_report_path,
+        "single_entry_path_ev": path_ev_report_path,
     }
     summary_text = build_operator_summary(
         options=options,
         statuses=statuses,
         rankings=rankings,
         exposure=exposure,
+        path_ev_result=path_ev_result,
         report_paths=report_paths,
     )
 
@@ -253,6 +311,7 @@ def run_live_week(
             statuses=statuses,
             rankings=rankings,
             exposure=exposure,
+            path_ev_result=path_ev_result,
             report_paths=report_paths,
         )
 
@@ -262,10 +321,12 @@ def run_live_week(
         rankings_report_path=rankings_report_path,
         simulation_report_path=simulation_report_path,
         portfolio_report_path=portfolio_report_path,
+        path_ev_report_path=path_ev_report_path,
         summary_report_path=summary_report_path,
         rankings=rankings,
         portfolio_exposure=exposure,
         portfolio_metrics=metrics,
+        path_ev_result=path_ev_result,
     )
 
 
@@ -275,6 +336,7 @@ def build_operator_summary(
     statuses: tuple[StepStatus, ...],
     rankings: pd.DataFrame,
     exposure: pd.DataFrame,
+    path_ev_result: SingleEntryPathOptimizationResult | None = None,
     report_paths: dict[str, Path | None],
 ) -> str:
     """Build the concise terminal summary for operators."""
@@ -290,11 +352,18 @@ def build_operator_summary(
     lines.extend(
         [
             "",
-            "Top Pick:",
+            "Heuristic Top Pick:",
             f"{top_pick['team']} over {top_pick['opponent']}",
             f"Win Prob: {float(top_pick['no_vig_win_probability']):.1%}",
             f"Consensus Ownership: {float(top_pick['public_pick_pct']):.1%}",
             f"Leverage Score: {float(top_pick['leverage_score']):.3f}",
+            "",
+            "Single-Entry Path EV:",
+            *_path_ev_summary_lines(
+                options=options,
+                result=path_ev_result,
+                heuristic_pick=top_pick,
+            ),
             "",
             "Portfolio Exposure:",
         ],
@@ -325,6 +394,7 @@ def write_week_summary_report(
     statuses: tuple[StepStatus, ...],
     rankings: pd.DataFrame,
     exposure: pd.DataFrame,
+    path_ev_result: SingleEntryPathOptimizationResult | None = None,
     report_paths: dict[str, Path | None],
 ) -> Path:
     """Write the weekly report index that links generated reports."""
@@ -354,6 +424,14 @@ def write_week_summary_report(
             f"{float(top_pick['leverage_score']):.3f} leverage."
         ),
         "",
+        "## Single-Entry Path EV",
+        "",
+        *_markdown_path_ev_summary_lines(
+            options=options,
+            result=path_ev_result,
+            heuristic_pick=top_pick,
+        ),
+        "",
         "## Portfolio Exposure",
         "",
         _markdown_exposure_table(exposure),
@@ -363,13 +441,167 @@ def write_week_summary_report(
     ]
     for label, path in report_paths.items():
         if path is None:
-            lines.append(f"- {label.title()}: not written")
+            lines.append(f"- {_report_label(label)}: not written")
         else:
-            lines.append(f"- [{label.title()}]({_relative_link(summary_path, path)})")
+            lines.append(
+                f"- [{_report_label(label)}]({_relative_link(summary_path, path)})",
+            )
     lines.append("")
 
     summary_path.write_text("\n".join(lines), encoding="utf-8")
     return summary_path
+
+
+def _effective_path_ev_simulations(options: LiveWeekOptions) -> int:
+    if options.path_ev_simulations is None:
+        return int(options.simulations)
+    return int(options.path_ev_simulations)
+
+
+def _single_entry_used_teams(entries_df: pd.DataFrame, week: int) -> list[str]:
+    if entries_df.empty:
+        return []
+
+    entries = entries_df.copy()
+    if "active" in entries.columns:
+        active_entries = entries[entries["active"].astype(bool)].copy()
+        if not active_entries.empty:
+            entries = active_entries
+
+    first = entries.iloc[0]
+    if "used_teams" in entries.columns:
+        return _parse_used_teams(first.get("used_teams"))
+
+    if {"entry_id", "week", "team_picked"}.issubset(entries.columns):
+        entry_id = first["entry_id"]
+        prior = entries[
+            (entries["entry_id"] == entry_id)
+            & (pd.to_numeric(entries["week"], errors="coerce") < int(week))
+        ]
+        return prior["team_picked"].dropna().astype(str).tolist()
+
+    return []
+
+
+def _parse_used_teams(value: object) -> list[str]:
+    if value is None or pd.isna(value):
+        return []
+    text = str(value).strip()
+    if not text or text.lower() in {"nan", "<na>"}:
+        return []
+    return [
+        team.strip()
+        for part in text.split(";")
+        for team in part.split(",")
+        if team.strip()
+    ]
+
+
+def _path_ev_status_detail(
+    result: SingleEntryPathOptimizationResult,
+    options: LiveWeekOptions,
+) -> str:
+    pick = _current_path_ev_pick(result, options.week)
+    return (
+        f"{_effective_path_ev_simulations(options)} simulations, "
+        f"{pick['team']} over {pick['opponent']}"
+    )
+
+
+def _path_ev_summary_lines(
+    *,
+    options: LiveWeekOptions,
+    result: SingleEntryPathOptimizationResult | None,
+    heuristic_pick: pd.Series,
+) -> list[str]:
+    if result is None:
+        return ["skipped (use --run-path-ev)"]
+
+    pick = _current_path_ev_pick(result, options.week)
+    lines = [
+        f"Best Pick: {pick['team']} over {pick['opponent']}",
+        f"Path EV Estimate: {result.best_path_ev:.4%}",
+    ]
+    if result.ev_dollars is not None:
+        lines.append(f"EV Dollars: {_format_money(result.ev_dollars)}")
+    lines.extend(
+        [
+            f"EV Multiple: {result.ev_multiple:.3f}x",
+            f"Expected Edge: {result.expected_edge:+.1%}",
+            f"Comparison: {_path_ev_comparison(result, pick, heuristic_pick)}",
+        ],
+    )
+    return lines
+
+
+def _markdown_path_ev_summary_lines(
+    *,
+    options: LiveWeekOptions,
+    result: SingleEntryPathOptimizationResult | None,
+    heuristic_pick: pd.Series,
+) -> list[str]:
+    if result is None:
+        return ["- Status: skipped (run with `--run-path-ev`)."]
+
+    pick = _current_path_ev_pick(result, options.week)
+    lines = [
+        f"- Best pick: {pick['team']} over {pick['opponent']}",
+        f"- Path EV estimate: {result.best_path_ev:.4%}",
+    ]
+    if result.ev_dollars is not None:
+        lines.append(f"- EV dollars: {_format_money(result.ev_dollars)}")
+    lines.extend(
+        [
+            f"- EV multiple: {result.ev_multiple:.3f}x",
+            f"- Expected edge: {result.expected_edge:+.1%}",
+            (
+                "- Comparison to heuristic top pick: "
+                f"{_path_ev_comparison(result, pick, heuristic_pick)}"
+            ),
+        ],
+    )
+    return lines
+
+
+def _current_path_ev_pick(
+    result: SingleEntryPathOptimizationResult,
+    week: int,
+) -> pd.Series:
+    current = result.best_path[result.best_path["week"].astype(int) == int(week)]
+    if current.empty:
+        current = result.best_path.sort_values("week").head(1)
+    return current.iloc[0]
+
+
+def _path_ev_comparison(
+    result: SingleEntryPathOptimizationResult,
+    path_ev_pick: pd.Series,
+    heuristic_pick: pd.Series,
+) -> str:
+    heuristic_team = str(heuristic_pick["team"])
+    path_ev_team = str(path_ev_pick["team"])
+    if path_ev_team == heuristic_team:
+        return f"matches heuristic top pick ({heuristic_team})."
+
+    suffix = ""
+    comparison = result.heuristic_comparison
+    if not comparison.empty and "team" in comparison.columns:
+        heuristic_row = comparison[comparison["team"].astype(str) == heuristic_team]
+        if not heuristic_row.empty:
+            row = heuristic_row.iloc[0]
+            heuristic_path_ev = row.get("best_path_ev_for_current_pick")
+            heuristic_path_rank = row.get("best_path_ev_rank_for_current_pick")
+            if heuristic_path_ev is not None and not pd.isna(heuristic_path_ev):
+                suffix = (
+                    f"; heuristic top pick path EV {float(heuristic_path_ev):.4%}"
+                )
+                if heuristic_path_rank is not None and not pd.isna(heuristic_path_rank):
+                    suffix += f", path EV rank {int(heuristic_path_rank)}"
+
+    return (
+        f"differs from heuristic top pick ({heuristic_team}); "
+        f"path EV prefers {path_ev_team}{suffix}."
+    )
 
 
 def _load_schedule(path: Path, options: LiveWeekOptions) -> pd.DataFrame:
@@ -732,6 +964,17 @@ def _validate_options(options: LiveWeekOptions) -> None:
         raise LiveWeekWorkflowError("--pool-size must be at least --entries.")
     if options.refresh_odds and not options.markets:
         raise LiveWeekWorkflowError("At least one odds market is required.")
+    if options.entry_fee is not None and options.entry_fee < 0:
+        raise LiveWeekWorkflowError("--entry-fee must be non-negative.")
+    if options.prize_pool is not None and options.prize_pool < 0:
+        raise LiveWeekWorkflowError("--prize-pool must be non-negative.")
+    if options.run_path_ev:
+        if _effective_path_ev_simulations(options) <= 0:
+            raise LiveWeekWorkflowError("--path-ev-simulations must be positive.")
+        if options.beam_width <= 0:
+            raise LiveWeekWorkflowError("--beam-width must be positive.")
+        if options.top_k <= 0:
+            raise LiveWeekWorkflowError("--top-k must be positive.")
 
 
 def _resolve_season_dir(season: int, data_dir: Path) -> Path:
@@ -799,12 +1042,26 @@ def _display_path(path: Path) -> str:
         return str(path)
 
 
+def _report_label(label: str) -> str:
+    labels = {
+        "rankings": "Rankings",
+        "simulation": "Simulation",
+        "portfolio": "Portfolio",
+        "single_entry_path_ev": "Single-Entry Path EV",
+    }
+    return labels.get(label, label.replace("_", " ").title())
+
+
 def _relative_link(from_path: Path, to_path: Path) -> str:
     try:
         relative = to_path.resolve().relative_to(from_path.resolve().parent)
         return str(relative).replace("\\", "/")
     except ValueError:
         return _display_path(to_path).replace(" ", "%20")
+
+
+def _format_money(value: float) -> str:
+    return f"${float(value):,.2f}"
 
 
 def _markdown_exposure_table(exposure: pd.DataFrame) -> str:
