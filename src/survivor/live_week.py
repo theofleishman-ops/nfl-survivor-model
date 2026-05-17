@@ -537,13 +537,22 @@ def _path_ev_summary_lines(
             f"{result.expected_survivors_if_alive:.2f}"
         ),
         f"Weeks With Real Odds: {_format_week_list(diagnostics.get('weeks_with_real_odds'))}",
+        f"Weeks With Projected Odds: {_format_week_list(diagnostics.get('weeks_with_projected_odds'))}",
         (
             "Weeks Using Fallback Probabilities: "
             f"{_format_week_list(diagnostics.get('weeks_using_fallback_probabilities'))}"
         ),
         (
+            "Average Projected Win Probability: "
+            f"{_format_optional_rate(diagnostics.get('average_projected_win_probability'))}"
+        ),
+        (
             "Average Fallback Win Probability: "
             f"{_format_optional_rate(diagnostics.get('average_fallback_win_probability'))}"
+        ),
+        (
+            "Probability Sources: "
+            f"{_format_methods(diagnostics.get('probability_sources'))}"
         ),
         (
             "Ownership Projection Method: "
@@ -588,13 +597,22 @@ def _markdown_path_ev_summary_lines(
         f"- Path survival probability: {_format_rate_pct(result.path_survival_probability)}",
         f"- Expected final survivors if alive: {result.expected_survivors_if_alive:.2f}",
         f"- Weeks with real odds: {_format_week_list(diagnostics.get('weeks_with_real_odds'))}",
+        f"- Weeks with projected odds: {_format_week_list(diagnostics.get('weeks_with_projected_odds'))}",
         (
             "- Weeks using fallback probabilities: "
             f"{_format_week_list(diagnostics.get('weeks_using_fallback_probabilities'))}"
         ),
         (
+            "- Average projected win probability: "
+            f"{_format_optional_rate(diagnostics.get('average_projected_win_probability'))}"
+        ),
+        (
             "- Average fallback win probability: "
             f"{_format_optional_rate(diagnostics.get('average_fallback_win_probability'))}"
+        ),
+        (
+            "- Probability sources: "
+            f"{_format_methods(diagnostics.get('probability_sources'))}"
         ),
         (
             "- Ownership projection method: "

@@ -54,14 +54,24 @@ def build_single_entry_path_ev_report(
         f"- Expected final field size: {result.expected_final_field_size:.2f}",
         f"- Expected survivors conditional on my survival: {result.expected_survivors_if_alive:.2f}",
         f"- Expected equity if alive: {_format_equity_pct(result.expected_equity_if_alive)}",
+        f"- Cumulative path EV: {_format_equity_pct(result.best_path_ev)}",
         f"- Weeks with real odds: {_format_week_list(diagnostics.get('weeks_with_real_odds'))}",
+        f"- Weeks with projected odds: {_format_week_list(diagnostics.get('weeks_with_projected_odds'))}",
         (
             f"- Weeks using fallback probabilities: "
             f"{_format_week_list(diagnostics.get('weeks_using_fallback_probabilities'))}"
         ),
         (
+            f"- Average projected win probability: "
+            f"{_format_optional_rate(diagnostics.get('average_projected_win_probability'))}"
+        ),
+        (
             f"- Average fallback win probability: "
             f"{_format_optional_rate(diagnostics.get('average_fallback_win_probability'))}"
+        ),
+        (
+            f"- Probability sources: "
+            f"{_format_methods(diagnostics.get('probability_sources'))}"
         ),
         (
             f"- Ownership projection method: "
@@ -118,6 +128,24 @@ def build_single_entry_path_ev_report(
                 "expected_public_entries",
                 "path_survival_probability",
                 "expected_total_entries",
+            ],
+        ),
+        "",
+        "## Path EV Creation By Week",
+        "",
+        _markdown_table(
+            _path_ev_creation_table(result),
+            [
+                "week",
+                "team",
+                "opponent",
+                "probability_source",
+                "win_probability",
+                "projected_public_pick_pct",
+                "path_survival_probability",
+                "expected_equity_if_alive",
+                "cumulative_path_ev",
+                "weekly_ev_delta",
             ],
         ),
         "",
@@ -180,6 +208,27 @@ def write_single_entry_path_ev_report(
     return report_path
 
 
+def _path_ev_creation_table(result: SingleEntryPathOptimizationResult) -> pd.DataFrame:
+    if result.best_path.empty or result.expected_field_size_by_week.empty:
+        return pd.DataFrame()
+    return result.best_path.merge(
+        result.expected_field_size_by_week[
+            [
+                column
+                for column in [
+                    "week",
+                    "expected_equity_if_alive",
+                    "cumulative_path_ev",
+                    "weekly_ev_delta",
+                ]
+                if column in result.expected_field_size_by_week.columns
+            ]
+        ],
+        on="week",
+        how="left",
+    )
+
+
 def _markdown_table(df: pd.DataFrame, columns: list[str]) -> str:
     if df.empty:
         return "_No rows._"
@@ -198,8 +247,17 @@ def _markdown_table(df: pd.DataFrame, columns: list[str]) -> str:
             "no_vig_win_probability",
             "public_pick_pct",
             "best_path_ev_for_current_pick",
+            "expected_equity_if_alive",
+            "cumulative_path_ev",
+            "weekly_ev_delta",
         }:
-            if column in {"path_ev", "best_path_ev_for_current_pick"}:
+            if column in {
+                "path_ev",
+                "best_path_ev_for_current_pick",
+                "expected_equity_if_alive",
+                "cumulative_path_ev",
+                "weekly_ev_delta",
+            }:
                 table[column] = table[column].map(_format_equity_pct)
             else:
                 table[column] = table[column].map(_format_pct)
@@ -223,6 +281,7 @@ def _markdown_table(df: pd.DataFrame, columns: list[str]) -> str:
             "status",
             "note",
             "selected_by_path_ev",
+            "probability_source",
         }:
             table[column] = table[column].map(_format_number)
 
