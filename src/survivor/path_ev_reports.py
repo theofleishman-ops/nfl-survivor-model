@@ -68,9 +68,37 @@ def build_single_entry_path_ev_report(
             f"{_format_optional_pct(diagnostics.get('path_uniqueness_score'))}"
         ),
         (
+            f"- Uniqueness after clustering adjustment: "
+            f"{_format_optional_pct(diagnostics.get('cluster_adjusted_uniqueness_score'))}"
+        ),
+        (
             f"- Expected overlap with public field: "
             f"{_format_optional_count(diagnostics.get('expected_public_overlap_entries'))} "
             f"({_format_optional_pct(diagnostics.get('expected_public_overlap_pct'))})"
+        ),
+        (
+            f"- Expected duplicate-path count: "
+            f"{_format_optional_count(diagnostics.get('expected_duplicate_path_count'))}"
+        ),
+        (
+            f"- Expected identical-path survivors: "
+            f"{_format_optional_count(diagnostics.get('expected_identical_path_survivors'))}"
+        ),
+        (
+            f"- Path clustering score: "
+            f"{_format_optional_pct(diagnostics.get('path_clustering_score'))}"
+        ),
+        (
+            f"- Late-season congestion score: "
+            f"{_format_optional_pct(diagnostics.get('late_season_congestion_score'))}"
+        ),
+        (
+            f"- Cluster penalty entries: "
+            f"{_format_optional_count(diagnostics.get('cluster_penalty_entries'))}"
+        ),
+        (
+            f"- Path clustering warnings: "
+            f"{_format_warnings(diagnostics.get('path_clustering_warnings'))}"
         ),
         f"- Scarcity weeks: {_format_week_list(diagnostics.get('scarcity_weeks'))}",
         f"- Weeks with real odds: {_format_week_list(diagnostics.get('weeks_with_real_odds'))}",
@@ -150,12 +178,18 @@ def build_single_entry_path_ev_report(
             [
                 "week",
                 "expected_public_entries_before_week",
+                "raw_expected_public_entries",
                 "expected_public_entries",
                 "path_survival_probability",
                 "expected_total_entries",
                 "expected_public_overlap_entries",
+                "expected_duplicate_path_count",
+                "expected_identical_path_survivors",
+                "cluster_penalty_entries",
                 "avg_path_overlap_pct",
+                "raw_path_uniqueness_score",
                 "path_uniqueness_score",
+                "cluster_adjusted_uniqueness_score",
             ],
         ),
         "",
@@ -200,6 +234,35 @@ def build_single_entry_path_ev_report(
             ],
         ),
         "",
+        "## Top Crowded Future Path Archetypes",
+        "",
+        _markdown_table(
+            pd.DataFrame(diagnostics.get("top_crowded_future_path_archetypes", [])),
+            [
+                "cluster_id",
+                "late_path_key",
+                "expected_entries",
+                "expected_surviving_entries",
+                "member_path_count",
+                "cluster_share",
+                "late_season_congestion_score",
+                "path_key",
+            ],
+        ),
+        "",
+        "## Path Convergence By Week",
+        "",
+        _markdown_table(
+            pd.DataFrame(diagnostics.get("path_convergence_by_week", [])),
+            [
+                "week",
+                "top_prefix",
+                "expected_entries_on_top_prefix",
+                "top_prefix_share",
+                "distinct_prefix_count",
+            ],
+        ),
+        "",
         "## Scarcity Weeks",
         "",
         _markdown_table(
@@ -223,7 +286,15 @@ def build_single_entry_path_ev_report(
                 "week",
                 "expected_public_overlap_entries",
                 "avg_path_overlap_pct",
+                "expected_duplicate_path_count",
+                "expected_identical_path_survivors",
+                "expected_near_identical_path_survivors",
+                "cluster_penalty_entries",
+                "path_clustering_score",
+                "late_season_congestion_score",
+                "raw_path_uniqueness_score",
                 "path_uniqueness_score",
+                "cluster_adjusted_uniqueness_score",
                 "public_field_model",
             ],
         ),
@@ -260,6 +331,10 @@ def build_single_entry_path_ev_report(
                 "path_survival_probability",
                 "expected_survivors_if_alive",
                 "expected_final_field_size",
+                "expected_duplicate_path_count",
+                "path_clustering_score",
+                "late_season_congestion_score",
+                "cluster_adjusted_uniqueness_score",
                 "path",
             ],
         ),
@@ -350,6 +425,13 @@ def _markdown_table(df: pd.DataFrame, columns: list[str]) -> str:
             "fallback_coverage_pct",
             "avg_path_overlap_pct",
             "path_uniqueness_score",
+            "raw_path_uniqueness_score",
+            "cluster_adjusted_uniqueness_score",
+            "path_clustering_score",
+            "late_season_congestion_score",
+            "cluster_share",
+            "surviving_cluster_share",
+            "top_prefix_share",
             "burned_pct",
             "remaining_field_available_pct",
             "remaining_field_used_pct",
@@ -382,6 +464,9 @@ def _markdown_table(df: pd.DataFrame, columns: list[str]) -> str:
             "team",
             "opponent",
             "path",
+            "path_key",
+            "late_path_key",
+            "top_prefix",
             "first_team",
             "label",
             "status",
@@ -500,3 +585,9 @@ def _format_methods(value: Any) -> str:
         f"{method} ({count})"
         for method, count in sorted(value.items())
     )
+
+
+def _format_warnings(value: Any) -> str:
+    if not isinstance(value, (list, tuple)) or not value:
+        return "none"
+    return " ".join(str(item) for item in value)

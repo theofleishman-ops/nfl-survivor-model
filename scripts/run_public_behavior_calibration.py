@@ -172,6 +172,9 @@ def main() -> None:
                 "expected_final_field_size",
                 "average_max_ownership_by_week",
                 "average_chalk_concentration",
+                "path_clustering_score",
+                "late_season_congestion_score",
+                "expected_duplicate_path_count",
                 "expected_team_exhaustion",
                 "best_path",
             ]
@@ -253,6 +256,12 @@ def _calibration_row(
         "expected_final_field_size": getattr(result, "expected_final_field_size", None),
         "average_max_ownership_by_week": average_max_ownership,
         "average_chalk_concentration": average_chalk,
+        "path_clustering_score": diagnostics.get("path_clustering_score"),
+        "late_season_congestion_score": diagnostics.get("late_season_congestion_score"),
+        "expected_duplicate_path_count": diagnostics.get("expected_duplicate_path_count"),
+        "cluster_adjusted_uniqueness_score": diagnostics.get(
+            "cluster_adjusted_uniqueness_score",
+        ),
         "expected_team_exhaustion": expected_exhaustion,
         "best_path": _format_best_path(getattr(result, "best_path", pd.DataFrame())),
         **config_values,
