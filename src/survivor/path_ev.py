@@ -90,6 +90,8 @@ ASSUMPTIONS = (
     "Current public pick percentages are used when present.",
     "Future public ownership is simulated as public-entry paths with used-team constraints when multiple weeks are evaluated.",
     "Public entries prefer win probability and chalk, weakly account for future scarcity, and occasionally choose contrarian paths.",
+    "Public behavior presets can add path clustering pressure so entries converge onto common elite future routes.",
+    "Cluster-adjusted EV penalizes near-duplicate future paths separately from generic survivor counts.",
     "Future win probabilities use no-vig moneyline first, then spread, then team-strength ratings with opponent strength and configurable home field, then a conservative default.",
     "Single-week evaluations use exact current-week ownership because used-team constraints have no future week to affect.",
 )
@@ -827,6 +829,17 @@ def _public_field_diagnostics(
             "path_uniqueness_score": None,
             "expected_public_overlap_entries": None,
             "expected_public_overlap_pct": None,
+            "expected_duplicate_path_count": None,
+            "expected_identical_path_survivors": None,
+            "expected_near_identical_path_survivors": None,
+            "path_clustering_score": None,
+            "late_season_congestion_score": None,
+            "cluster_adjusted_uniqueness_score": None,
+            "cluster_penalty_entries": None,
+            "raw_expected_final_public_entries": None,
+            "top_crowded_future_path_archetypes": [],
+            "path_convergence_by_week": [],
+            "path_clustering_warnings": [],
         }
 
     path_field = _as_dataframe(path_field_by_week)
@@ -855,6 +868,19 @@ def _public_field_diagnostics(
         if not path_field.empty and "avg_path_overlap_pct" in path_field.columns
         else None
     )
+    duplicate_count = _last_or_none(path_field, "expected_duplicate_path_count")
+    identical_survivors = _last_or_none(path_field, "expected_identical_path_survivors")
+    near_survivors = _last_or_none(path_field, "expected_near_identical_path_survivors")
+    clustering_score = _last_or_none(path_field, "path_clustering_score")
+    late_congestion = _last_or_none(path_field, "late_season_congestion_score")
+    cluster_uniqueness = _last_or_none(path_field, "cluster_adjusted_uniqueness_score")
+    cluster_penalty = _last_or_none(path_field, "cluster_penalty_entries")
+    raw_final_public = _last_or_none(path_field, "raw_expected_public_entries")
+    warnings = _path_clustering_warnings(
+        clustering_score=clustering_score,
+        late_congestion=late_congestion,
+        duplicate_count=duplicate_count,
+    )
 
     return {
         "public_field_model": PUBLIC_FIELD_PICK_SOURCE,
@@ -874,6 +900,10 @@ def _public_field_diagnostics(
                 "contrarian_rate",
                 "max_single_team_ownership",
                 "ownership_temperature",
+                "clustering_strength",
+                "elite_path_bias",
+                "late_season_overlap_weight",
+                "path_convergence_temperature",
             ]
         },
         "public_field_sample_size": int(public_field.sample_entry_count),
@@ -930,6 +960,41 @@ def _public_field_diagnostics(
         "path_uniqueness_score": path_uniqueness,
         "expected_public_overlap_entries": overlap_entries,
         "expected_public_overlap_pct": overlap_pct,
+        "expected_duplicate_path_count": duplicate_count,
+        "expected_identical_path_survivors": identical_survivors,
+        "expected_near_identical_path_survivors": near_survivors,
+        "path_clustering_score": clustering_score,
+        "late_season_congestion_score": late_congestion,
+        "cluster_adjusted_uniqueness_score": cluster_uniqueness,
+        "cluster_penalty_entries": cluster_penalty,
+        "raw_expected_final_public_entries": raw_final_public,
+        "late_season_convergence_score": public_field.diagnostics.get(
+            "late_season_convergence_score",
+        ),
+        "top_crowded_future_path_archetypes": _records_for_columns(
+            public_field.path_clusters,
+            [
+                "cluster_id",
+                "path_key",
+                "late_path_key",
+                "expected_entries",
+                "expected_surviving_entries",
+                "member_path_count",
+                "cluster_share",
+                "late_season_congestion_score",
+            ],
+        )[:10],
+        "path_convergence_by_week": _records_for_columns(
+            public_field.path_convergence,
+            [
+                "week",
+                "top_prefix",
+                "expected_entries_on_top_prefix",
+                "top_prefix_share",
+                "distinct_prefix_count",
+            ],
+        ),
+        "path_clustering_warnings": warnings,
     }
 
 
@@ -1131,6 +1196,31 @@ def _value_counts_dict(df: pd.DataFrame, column: str) -> dict[str, int]:
         str(key): int(value)
         for key, value in values.value_counts().sort_index().items()
     }
+
+
+def _last_or_none(df: pd.DataFrame, column: str) -> float | None:
+    if df.empty or column not in df.columns:
+        return None
+    values = pd.to_numeric(df[column], errors="coerce").dropna()
+    if values.empty:
+        return None
+    return float(values.iloc[-1])
+
+
+def _path_clustering_warnings(
+    *,
+    clustering_score: float | None,
+    late_congestion: float | None,
+    duplicate_count: float | None,
+) -> list[str]:
+    warnings: list[str] = []
+    if clustering_score is not None and float(clustering_score) >= 0.35:
+        warnings.append("This path uses a highly crowded elite-team route.")
+    if late_congestion is not None and float(late_congestion) >= 0.45:
+        warnings.append("Late-season convergence risk elevated.")
+    if duplicate_count is not None and float(duplicate_count) >= 1.0:
+        warnings.append("Expected duplicate-path survivors are material.")
+    return warnings
 
 
 def _records_for_columns(df: pd.DataFrame, columns: list[str]) -> list[dict[str, Any]]:
@@ -2003,6 +2093,11 @@ def _evaluate_prepared_paths_with_public_field(
             (public_field.simulations, public_field.sample_entry_count),
             dtype=bool,
         )
+        overlap_masks = _candidate_public_path_overlap_masks(public_field, ordered)
+        final_duplicate_entries = np.zeros(public_field.simulations, dtype=float)
+        final_identical_entries = np.zeros(public_field.simulations, dtype=float)
+        final_cluster_penalty_entries = np.zeros(public_field.simulations, dtype=float)
+        final_raw_public_entries = np.zeros(public_field.simulations, dtype=float)
 
         for row in ordered.to_dict("records"):
             week = int(row["week"])
@@ -2042,14 +2137,39 @@ def _evaluate_prepared_paths_with_public_field(
             public_alive = public_alive & conditioned_wins
             public_entries_after = public_alive.sum(axis=1).astype(float) * public_field.entry_weight
             path_survival_probability *= float(row["win_probability"])
-            expected_public_entries = float(public_entries_after.mean())
+            cluster_metrics = _cluster_penalty_for_alive_public(
+                public_alive=public_alive,
+                overlap_masks=overlap_masks,
+                public_field=public_field,
+            )
+            adjusted_public_entries = (
+                public_entries_after + cluster_metrics["cluster_penalty_entries"]
+            )
+            expected_public_entries = float(adjusted_public_entries.mean())
             expected_total_entries = expected_public_entries + 1.0
-            equity_if_alive = 1.0 / np.maximum(public_entries_after + 1.0, 1.0)
+            equity_if_alive = 1.0 / np.maximum(adjusted_public_entries + 1.0, 1.0)
             expected_equity_if_alive = float(equity_if_alive.mean())
             cumulative_path_ev = float(
                 path_survival_probability * expected_equity_if_alive,
             )
             avg_overlap_pct = float(overlap_pct.mean())
+            expected_duplicate_entries = float(
+                cluster_metrics["near_duplicate_entries"].mean(),
+            )
+            expected_identical_survivors = float(
+                cluster_metrics["identical_entries"].mean(),
+            )
+            expected_near_survivors = float(
+                cluster_metrics["near_duplicate_entries"].mean(),
+            )
+            clustering_score = _cluster_score(expected_duplicate_entries, pool_size)
+            cluster_uniqueness = 1.0 / (1.0 + expected_duplicate_entries)
+            weekly_uniqueness = float(1.0 - avg_overlap_pct)
+            adjusted_uniqueness = float(min(weekly_uniqueness, cluster_uniqueness))
+            final_duplicate_entries = cluster_metrics["near_duplicate_entries"]
+            final_identical_entries = cluster_metrics["identical_entries"]
+            final_cluster_penalty_entries = cluster_metrics["cluster_penalty_entries"]
+            final_raw_public_entries = public_entries_after
             survival_rows.append(
                 {
                     "path_id": int(path_id),
@@ -2065,11 +2185,24 @@ def _evaluate_prepared_paths_with_public_field(
                         public_entries_before.mean(),
                     ),
                     "expected_public_entries": expected_public_entries,
+                    "raw_expected_public_entries": float(public_entries_after.mean()),
                     "expected_total_entries": expected_total_entries,
                     "expected_equity_if_alive": expected_equity_if_alive,
                     "expected_public_overlap_entries": float(overlap_entries.mean()),
                     "avg_path_overlap_pct": avg_overlap_pct,
-                    "path_uniqueness_score": float(1.0 - avg_overlap_pct),
+                    "raw_path_uniqueness_score": weekly_uniqueness,
+                    "path_uniqueness_score": adjusted_uniqueness,
+                    "expected_duplicate_path_count": expected_duplicate_entries,
+                    "expected_identical_path_survivors": expected_identical_survivors,
+                    "expected_near_identical_path_survivors": expected_near_survivors,
+                    "cluster_penalty_entries": float(
+                        cluster_metrics["cluster_penalty_entries"].mean(),
+                    ),
+                    "path_clustering_score": clustering_score,
+                    "late_season_congestion_score": float(
+                        cluster_metrics["late_season_congestion_score"],
+                    ),
+                    "cluster_adjusted_uniqueness_score": cluster_uniqueness,
                     "cumulative_path_ev": cumulative_path_ev,
                     "weekly_ev_delta": cumulative_path_ev - previous_cumulative_path_ev,
                     "public_field_model": PUBLIC_FIELD_PICK_SOURCE,
@@ -2077,7 +2210,7 @@ def _evaluate_prepared_paths_with_public_field(
             )
             previous_cumulative_path_ev = cumulative_path_ev
 
-        final_public_entries = public_alive.sum(axis=1).astype(float) * public_field.entry_weight
+        final_public_entries = final_raw_public_entries + final_cluster_penalty_entries
         total_survivors_if_alive = final_public_entries + 1.0
         equity_if_alive = 1.0 / np.maximum(total_survivors_if_alive, 1.0)
         expected_equity_if_alive = float(equity_if_alive.mean())
@@ -2101,6 +2234,24 @@ def _evaluate_prepared_paths_with_public_field(
                 "path_survival_probability": float(path_survival_probability),
                 "expected_final_field_size": expected_survivors_if_alive,
                 "expected_final_public_entries": float(final_public_entries.mean()),
+                "raw_expected_final_public_entries": float(
+                    final_raw_public_entries.mean(),
+                ),
+                "expected_duplicate_path_count": float(final_duplicate_entries.mean()),
+                "expected_identical_path_survivors": float(final_identical_entries.mean()),
+                "expected_near_identical_path_survivors": float(
+                    final_duplicate_entries.mean(),
+                ),
+                "cluster_penalty_entries": float(final_cluster_penalty_entries.mean()),
+                "path_clustering_score": _cluster_score(
+                    float(final_duplicate_entries.mean()),
+                    pool_size,
+                ),
+                "late_season_congestion_score": float(
+                    overlap_masks["late_season_congestion_score"],
+                ),
+                "cluster_adjusted_uniqueness_score": 1.0
+                / (1.0 + float(final_duplicate_entries.mean())),
                 "expected_survivors_if_alive": expected_survivors_if_alive,
                 "expected_equity_if_alive": expected_equity_if_alive,
                 **value_metrics,
@@ -2168,6 +2319,139 @@ def _advance_public_entries_conditional_on_path(
             wins = simulation.team_wins[(int(week), team)]
         survivors += np.where(wins, counts[index], 0.0)
     return survivors
+
+
+def _candidate_public_path_overlap_masks(
+    public_field: PublicFieldSimulationResult,
+    ordered_path: pd.DataFrame,
+) -> dict[str, Any]:
+    week_indices: list[int] = []
+    team_codes: list[int] = []
+    elite_flags: list[bool] = []
+    for row in ordered_path.sort_values("week").to_dict("records"):
+        week = int(row["week"])
+        team = str(row["team"])
+        week_index = public_field.week_to_index.get(week)
+        if week_index is None:
+            raise ValueError(f"Public field simulation is missing week {week}.")
+        if team not in public_field.team_to_code:
+            raise ValueError(f"Public field simulation is missing team {team}.")
+        week_indices.append(int(week_index))
+        team_codes.append(int(public_field.team_to_code[team]))
+        win_probability = float(row.get("win_probability", 0.0))
+        ownership = float(row.get("projected_public_pick_pct", 0.0))
+        elite_flags.append(win_probability >= 0.70 or ownership >= 0.25)
+
+    if not week_indices:
+        empty = np.zeros(
+            (public_field.simulations, public_field.sample_entry_count),
+            dtype=bool,
+        )
+        return {
+            "near_duplicate_mask": empty,
+            "identical_mask": empty,
+            "late_similarity": empty.astype(float),
+            "late_season_congestion_score": 0.0,
+        }
+
+    picks = public_field.pick_matrix[:, :, week_indices]
+    candidate = np.asarray(team_codes, dtype=np.int16)
+    same_week = picks == candidate[np.newaxis, np.newaxis, :]
+    ordered_overlap = same_week.mean(axis=2)
+    late_weights = _late_overlap_weights(
+        len(team_codes),
+        float(public_field.diagnostics.get("late_season_overlap_weight", 2.0)),
+    )
+    late_overlap = (same_week * late_weights[np.newaxis, np.newaxis, :]).sum(axis=2)
+    late_overlap = late_overlap / float(late_weights.sum())
+    elite_mask = np.asarray(elite_flags, dtype=bool)
+    if bool(elite_mask.any()):
+        elite_overlap = same_week[:, :, elite_mask].mean(axis=2)
+    else:
+        elite_overlap = ordered_overlap
+
+    similarity = (
+        0.25 * ordered_overlap
+        + 0.45 * late_overlap
+        + 0.30 * elite_overlap
+    )
+    similarity_threshold = _path_similarity_threshold(public_field)
+    near_duplicate_mask = similarity >= similarity_threshold
+    identical_mask = same_week.all(axis=2)
+    return {
+        "near_duplicate_mask": near_duplicate_mask,
+        "identical_mask": identical_mask,
+        "late_similarity": late_overlap,
+        "late_season_congestion_score": float(late_overlap.mean()),
+        "similarity_threshold": similarity_threshold,
+    }
+
+
+def _cluster_penalty_for_alive_public(
+    *,
+    public_alive: np.ndarray,
+    overlap_masks: dict[str, Any],
+    public_field: PublicFieldSimulationResult,
+) -> dict[str, Any]:
+    near_mask = overlap_masks["near_duplicate_mask"]
+    identical_mask = overlap_masks["identical_mask"]
+    near_duplicate_entries = (
+        (public_alive & near_mask).sum(axis=1).astype(float) * public_field.entry_weight
+    )
+    identical_entries = (
+        (public_alive & identical_mask).sum(axis=1).astype(float)
+        * public_field.entry_weight
+    )
+    alive_entries = public_alive.sum(axis=1).astype(float)
+    late_similarity = np.asarray(overlap_masks["late_similarity"], dtype=float)
+    late_similarity_sum = (late_similarity * public_alive).sum(axis=1)
+    late_congestion_by_simulation = np.divide(
+        late_similarity_sum,
+        alive_entries,
+        out=np.zeros_like(late_similarity_sum, dtype=float),
+        where=alive_entries > 0,
+    )
+    late_congestion_score = float(late_congestion_by_simulation.mean())
+    clustering_strength = float(public_field.diagnostics.get("clustering_strength", 0.0))
+    penalty_scale = clustering_strength * (0.50 + 0.50 * late_congestion_score)
+    cluster_penalty_entries = near_duplicate_entries * penalty_scale
+    return {
+        "near_duplicate_entries": near_duplicate_entries,
+        "identical_entries": identical_entries,
+        "cluster_penalty_entries": cluster_penalty_entries,
+        "late_season_congestion_score": late_congestion_score,
+    }
+
+
+def _late_overlap_weights(count: int, late_season_overlap_weight: float) -> np.ndarray:
+    if count <= 0:
+        return np.array([], dtype=float)
+    if count == 1:
+        return np.ones(1, dtype=float)
+    late_weight = max(float(late_season_overlap_weight), 1.0)
+    return np.asarray(
+        [
+            1.0 + (late_weight - 1.0) * index / float(count - 1)
+            for index in range(count)
+        ],
+        dtype=float,
+    )
+
+
+def _path_similarity_threshold(public_field: PublicFieldSimulationResult) -> float:
+    temperature = float(public_field.diagnostics.get("path_convergence_temperature", 1.0))
+    clustering_strength = float(public_field.diagnostics.get("clustering_strength", 0.0))
+    threshold = 0.74 - 0.08 * min(max(clustering_strength, 0.0), 1.0)
+    if temperature < 1.0:
+        threshold -= 0.03 * (1.0 - temperature)
+    return float(max(0.55, min(0.80, threshold)))
+
+
+def _cluster_score(duplicate_count: float, pool_size: int) -> float:
+    scale = max(np.sqrt(max(float(pool_size), 1.0)), 1.0)
+    return float(
+        max(0.0, min(1.0, 1.0 - np.exp(-max(float(duplicate_count), 0.0) / scale))),
+    )
 
 
 def _public_distributions(team_probabilities: pd.DataFrame) -> dict[int, pd.DataFrame]:

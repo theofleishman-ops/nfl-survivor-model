@@ -28,6 +28,7 @@ DEFAULT_PUBLIC_FUTURE_AWARENESS = 0.20
 DEFAULT_PUBLIC_RANDOMNESS = 0.08
 
 PUBLIC_FIELD_PICK_SOURCE = "public_field_path_simulation"
+MAX_PATH_CLUSTER_SUMMARY_ROWS = 25000
 
 
 @dataclass(frozen=True)
@@ -44,6 +45,8 @@ class PublicFieldSimulationResult:
     remaining_field_distribution: pd.DataFrame
     team_usage_exhaustion: pd.DataFrame
     scarcity_by_week: pd.DataFrame
+    path_clusters: pd.DataFrame
+    path_convergence: pd.DataFrame
     diagnostics: dict[str, Any]
     weeks: list[int]
     teams: list[str]
@@ -166,6 +169,18 @@ def simulate_public_field_paths(
         "contrarian_rate": float(public_behavior.contrarian_rate),
         "max_single_team_ownership": float(public_behavior.max_single_team_ownership),
         "ownership_temperature": float(public_behavior.ownership_temperature),
+        "clustering_strength": float(public_behavior.clustering_strength),
+        "elite_path_bias": float(public_behavior.elite_path_bias),
+        "late_season_overlap_weight": float(
+            public_behavior.late_season_overlap_weight,
+        ),
+        "path_convergence_temperature": float(
+            public_behavior.path_convergence_temperature,
+        ),
+        "late_season_convergence_score": _mean_or_zero(
+            summaries["path_convergence"],
+            "top_prefix_share",
+        ),
     }
 
     return PublicFieldSimulationResult(
@@ -174,6 +189,8 @@ def simulate_public_field_paths(
         remaining_field_distribution=summaries["remaining_field_distribution"],
         team_usage_exhaustion=summaries["team_usage_exhaustion"],
         scarcity_by_week=summaries["scarcity_by_week"],
+        path_clusters=summaries["path_clusters"],
+        path_convergence=summaries["path_convergence"],
         diagnostics=diagnostics,
         weeks=selected_weeks,
         teams=prepared.teams,
@@ -361,6 +378,15 @@ def _simulate_public_pick_matrices(
     used = np.zeros((simulations * sample_entries, team_count), dtype=bool)
     row_indices = np.arange(simulations * sample_entries)
     simulation_indices = np.repeat(np.arange(simulations), sample_entries)
+    entry_indices = np.tile(np.arange(sample_entries), simulations)
+    cohort_count = max(1, min(sample_entries, int(np.sqrt(max(sample_entries, 1)))))
+    entry_cohorts = entry_indices % cohort_count
+    clustering_strength = float(behavior_config.clustering_strength)
+    clustered_entries = (
+        rng.random(simulations * sample_entries) < min(max(clustering_strength, 0.0), 1.0)
+        if clustering_strength > 0
+        else np.zeros(simulations * sample_entries, dtype=bool)
+    )
     team_to_code = prepared.team_to_code
     game_to_code = prepared.game_to_code
 
@@ -393,10 +419,32 @@ def _simulate_public_pick_matrices(
             eligible_weights[no_options] = replacement
             totals = eligible_weights.sum(axis=1)
 
+        eligible_weights = _apply_path_clustering_pressure(
+            eligible_weights,
+            week_df,
+            prepared.probabilities,
+            prepared.teams,
+            week_index=week_index,
+            week_count=week_count,
+            behavior_config=behavior_config,
+        )
+        totals = eligible_weights.sum(axis=1)
         choices = np.full(simulations * sample_entries, -1, dtype=np.int16)
         valid_rows = totals > 0
         cumulative = np.cumsum(eligible_weights[valid_rows], axis=1)
-        draws = rng.random(int(valid_rows.sum())) * totals[valid_rows]
+        draw_quantiles = rng.random(int(valid_rows.sum()))
+        if clustering_strength > 0 and int(valid_rows.sum()) > 0:
+            cohort_draws = rng.random((simulations, cohort_count))
+            common_draws = cohort_draws[
+                simulation_indices[valid_rows],
+                entry_cohorts[valid_rows],
+            ]
+            draw_quantiles = np.where(
+                clustered_entries[valid_rows],
+                common_draws,
+                draw_quantiles,
+            )
+        draws = draw_quantiles * totals[valid_rows]
         choices[valid_rows] = (
             cumulative >= draws[:, np.newaxis]
         ).argmax(axis=1).astype(np.int16)
@@ -621,6 +669,17 @@ def _summarize_public_field(
         if entry_path_frames
         else pd.DataFrame()
     )
+    path_clusters = _path_cluster_summaries(
+        prepared=prepared,
+        pick_matrix=pick_matrix,
+        pick_win_matrix=pick_win_matrix,
+        entry_weight=entry_weight,
+    )
+    path_convergence = _path_convergence_by_week(
+        prepared=prepared,
+        pick_matrix=pick_matrix,
+        entry_weight=entry_weight,
+    )
     return {
         "entry_paths": entry_paths,
         "week_by_week_public_ownership": pd.DataFrame(ownership_rows).sort_values(
@@ -638,6 +697,8 @@ def _summarize_public_field(
         "scarcity_by_week": pd.DataFrame(scarcity_rows).sort_values("week").reset_index(
             drop=True,
         ),
+        "path_clusters": path_clusters,
+        "path_convergence": path_convergence,
     }
 
 
@@ -687,6 +748,199 @@ def _entry_paths_for_week(
     return rows
 
 
+def _path_cluster_summaries(
+    *,
+    prepared: _PreparedPublicField,
+    pick_matrix: np.ndarray,
+    pick_win_matrix: np.ndarray,
+    entry_weight: float,
+    late_window: int = 4,
+) -> pd.DataFrame:
+    simulations, sample_entries, week_count = pick_matrix.shape
+    if simulations <= 0 or sample_entries <= 0 or week_count <= 0:
+        return pd.DataFrame()
+
+    row_weight = float(entry_weight) / max(float(simulations), 1.0)
+    flat_paths = pick_matrix.reshape(simulations * sample_entries, week_count)
+    survived = pick_win_matrix.all(axis=2).reshape(simulations * sample_entries)
+    if flat_paths.size == 0:
+        return pd.DataFrame()
+    flat_paths, survived, sample_scale = _deterministic_summary_sample(
+        flat_paths,
+        survived,
+        max_rows=MAX_PATH_CLUSTER_SUMMARY_ROWS,
+    )
+    row_weight *= sample_scale
+    unique_paths, inverse, counts = np.unique(
+        flat_paths,
+        axis=0,
+        return_inverse=True,
+        return_counts=True,
+    )
+    survivor_counts = np.bincount(
+        inverse,
+        weights=survived.astype(float),
+        minlength=len(unique_paths),
+    )
+    late_count = min(max(int(late_window), 1), week_count)
+    grouped: dict[tuple[int, ...], dict[str, Any]] = {}
+    for codes, count, survivor_count in zip(
+        unique_paths,
+        counts,
+        survivor_counts,
+        strict=False,
+    ):
+        if not _has_valid_codes(codes):
+            continue
+        late_codes = tuple(int(code) for code in codes[-late_count:])
+        current = grouped.setdefault(
+            late_codes,
+            {
+                "expected_entries": 0.0,
+                "expected_surviving_entries": 0.0,
+                "observed_path_count": 0,
+                "member_path_count": 0,
+                "representative_codes": codes,
+                "representative_count": -1,
+            },
+        )
+        current["expected_entries"] += float(count) * row_weight
+        current["expected_surviving_entries"] += float(survivor_count) * row_weight
+        current["observed_path_count"] += int(count)
+        current["member_path_count"] += 1
+        if int(count) > int(current["representative_count"]):
+            current["representative_codes"] = codes
+            current["representative_count"] = int(count)
+
+    if not grouped:
+        return pd.DataFrame()
+    total_entries = max(
+        float(sum(item["expected_entries"] for item in grouped.values())),
+        1.0,
+    )
+    cluster_rows: list[dict[str, Any]] = []
+    sorted_groups = sorted(
+        grouped.items(),
+        key=lambda item: (item[1]["expected_entries"], item[1]["member_path_count"]),
+        reverse=True,
+    )
+    for cluster_id, (late_codes, group) in enumerate(
+        sorted_groups[:25],
+        start=1,
+    ):
+        expected_entries = float(group["expected_entries"])
+        expected_survivors = float(group["expected_surviving_entries"])
+        cluster_rows.append(
+            {
+                "cluster_id": int(cluster_id),
+                "path_key": _path_key_from_codes(
+                    np.asarray(group["representative_codes"], dtype=np.int16),
+                    prepared.weeks,
+                    prepared.teams,
+                ),
+                "late_path_key": _path_key_from_codes(
+                    np.asarray(late_codes, dtype=np.int16),
+                    prepared.weeks[-late_count:],
+                    prepared.teams,
+                ),
+                "expected_entries": expected_entries,
+                "expected_surviving_entries": expected_survivors,
+                "observed_path_count": int(group["observed_path_count"]),
+                "member_path_count": int(group["member_path_count"]),
+                "cluster_share": expected_entries / total_entries,
+                "surviving_cluster_share": expected_survivors / total_entries,
+                "late_season_congestion_score": min(
+                    max(expected_entries / total_entries, 0.0),
+                    1.0,
+                ),
+            },
+        )
+    return pd.DataFrame(cluster_rows).reset_index(drop=True)
+
+
+def _path_convergence_by_week(
+    *,
+    prepared: _PreparedPublicField,
+    pick_matrix: np.ndarray,
+    entry_weight: float,
+) -> pd.DataFrame:
+    simulations, sample_entries, week_count = pick_matrix.shape
+    if simulations <= 0 or sample_entries <= 0 or week_count <= 0:
+        return pd.DataFrame()
+    row_weight = float(entry_weight) / max(float(simulations), 1.0)
+    flat_paths = pick_matrix.reshape(simulations * sample_entries, week_count)
+    flat_paths, _, sample_scale = _deterministic_summary_sample(
+        flat_paths,
+        None,
+        max_rows=MAX_PATH_CLUSTER_SUMMARY_ROWS,
+    )
+    row_weight *= sample_scale
+    unique_paths, counts = np.unique(flat_paths, axis=0, return_counts=True)
+    valid_indices = [
+        index for index, codes in enumerate(unique_paths) if _has_valid_codes(codes)
+    ]
+    if not valid_indices:
+        return pd.DataFrame()
+
+    rows: list[dict[str, Any]] = []
+    for week_index, week in enumerate(prepared.weeks):
+        prefixes: dict[tuple[int, ...], int] = {}
+        for index in valid_indices:
+            prefix = tuple(int(code) for code in unique_paths[index, : week_index + 1])
+            prefixes[prefix] = prefixes.get(prefix, 0) + int(counts[index])
+        top_prefix_codes, top_count = max(
+            prefixes.items(),
+            key=lambda item: (item[1], item[0]),
+        )
+        top_entries = float(top_count) * row_weight
+        total_entries = max(float(sum(prefixes.values())) * row_weight, 1.0)
+        top_prefix = _path_key_from_codes(
+            np.asarray(top_prefix_codes, dtype=np.int16),
+            prepared.weeks[: week_index + 1],
+            prepared.teams,
+        )
+        rows.append(
+            {
+                "week": int(week),
+                "top_prefix": top_prefix,
+                "expected_entries_on_top_prefix": float(top_entries),
+                "top_prefix_share": float(top_entries) / float(total_entries),
+                "distinct_prefix_count": int(len(valid_indices)),
+            },
+        )
+    return pd.DataFrame(rows)
+
+
+def _path_key_from_codes(
+    codes: np.ndarray,
+    weeks: list[int],
+    teams: list[str],
+) -> str:
+    return " > ".join(
+        f"W{int(week)}:{teams[int(code)]}"
+        for week, code in zip(weeks, codes, strict=False)
+        if int(code) >= 0
+    )
+
+
+def _has_valid_codes(codes: np.ndarray) -> bool:
+    return bool(np.asarray(codes).size > 0 and (np.asarray(codes) >= 0).any())
+
+
+def _deterministic_summary_sample(
+    rows: np.ndarray,
+    survived: np.ndarray | None,
+    *,
+    max_rows: int,
+) -> tuple[np.ndarray, np.ndarray | None, float]:
+    row_count = int(rows.shape[0])
+    if row_count <= int(max_rows):
+        return rows, survived, 1.0
+    indices = np.linspace(0, row_count - 1, int(max_rows), dtype=int)
+    sampled_survived = survived[indices] if survived is not None else None
+    return rows[indices], sampled_survived, float(row_count) / float(len(indices))
+
+
 def _team_used_through_week(
     pick_matrix: np.ndarray,
     team_code: int,
@@ -701,6 +955,110 @@ def _used_team_count_by_entry(pick_subset: np.ndarray, team_count: int) -> np.nd
     for team_code in range(team_count):
         counts += (pick_subset == team_code).any(axis=2)
     return counts
+
+
+def _apply_path_clustering_pressure(
+    eligible_weights: np.ndarray,
+    week_df: pd.DataFrame,
+    all_probabilities: pd.DataFrame,
+    teams: list[str],
+    *,
+    week_index: int,
+    week_count: int,
+    behavior_config: PublicBehaviorConfig,
+) -> np.ndarray:
+    strength = float(behavior_config.clustering_strength)
+    if strength <= 0 or eligible_weights.size == 0:
+        return eligible_weights
+
+    convergence = _late_convergence_factor(
+        week_index=week_index,
+        week_count=week_count,
+        late_season_overlap_weight=float(behavior_config.late_season_overlap_weight),
+    )
+    if convergence <= 0:
+        return eligible_weights
+
+    pressure = _elite_path_pressure(
+        week_df,
+        all_probabilities,
+        teams,
+        behavior_config=behavior_config,
+    )
+    shaped = eligible_weights * (
+        1.0
+        + strength
+        * float(behavior_config.elite_path_bias)
+        * convergence
+        * pressure[np.newaxis, :]
+    )
+
+    target_temperature = float(behavior_config.path_convergence_temperature)
+    effective_temperature = 1.0 + strength * convergence * (target_temperature - 1.0)
+    effective_temperature = max(effective_temperature, 0.05)
+    if effective_temperature != 1.0:
+        shaped = np.where(shaped > 0, shaped ** (1.0 / effective_temperature), 0.0)
+    return shaped
+
+
+def _elite_path_pressure(
+    week_df: pd.DataFrame,
+    all_probabilities: pd.DataFrame,
+    teams: list[str],
+    *,
+    behavior_config: PublicBehaviorConfig,
+) -> np.ndarray:
+    pressure = np.zeros(len(teams), dtype=float)
+    if week_df.empty:
+        return pressure
+
+    current_week = int(week_df["week"].astype(int).min())
+    future = all_probabilities[
+        all_probabilities["week"].astype(int) > current_week
+    ].copy()
+    future_best = (
+        future.groupby("team")["win_probability"].max().astype(float).to_dict()
+        if not future.empty
+        else {}
+    )
+    ownership_column = (
+        "projected_public_pick_pct"
+        if "projected_public_pick_pct" in week_df.columns
+        else None
+    )
+    team_positions = {team: index for index, team in enumerate(teams)}
+    for row in week_df.to_dict("records"):
+        team = str(row["team"])
+        index = team_positions.get(team)
+        if index is None:
+            continue
+        win_probability = float(row.get("win_probability", 0.0))
+        ownership = float(row.get(ownership_column, 0.0)) if ownership_column else 0.0
+        future_probability = float(future_best.get(team, 0.0))
+        favorite_signal = max(win_probability - 0.55, 0.0) / 0.35
+        future_signal = max(future_probability - 0.60, 0.0) / 0.30
+        ownership_signal = max(ownership - 0.10, 0.0) / 0.40
+        pressure[index] = min(
+            1.0,
+            0.50 * favorite_signal
+            + 0.30 * future_signal * (1.0 + float(behavior_config.future_awareness) * 0.15)
+            + 0.20 * ownership_signal,
+        )
+    return pressure
+
+
+def _late_convergence_factor(
+    *,
+    week_index: int,
+    week_count: int,
+    late_season_overlap_weight: float,
+) -> float:
+    if week_count <= 1:
+        return 0.0
+    position = float(week_index) / float(max(week_count - 1, 1))
+    late_weight = max(float(late_season_overlap_weight), 1.0)
+    shaped = position ** 0.75
+    return float(min(max(shaped * late_weight / 2.0, 0.0), 1.0))
 
 
 def _week_code_weights(
@@ -995,6 +1353,15 @@ def _resolve_behavior_config(
     )
 
 
+def _mean_or_zero(df: pd.DataFrame, column: str) -> float:
+    if df.empty or column not in df.columns:
+        return 0.0
+    values = pd.to_numeric(df[column], errors="coerce").dropna()
+    if values.empty:
+        return 0.0
+    return float(values.mean())
+
+
 def _empty_public_field_result(
     *,
     pool_size: int,
@@ -1016,12 +1383,19 @@ def _empty_public_field_result(
         remaining_field_distribution=pd.DataFrame(),
         team_usage_exhaustion=pd.DataFrame(),
         scarcity_by_week=pd.DataFrame(),
+        path_clusters=pd.DataFrame(),
+        path_convergence=pd.DataFrame(),
         diagnostics={
             "model": PUBLIC_FIELD_PICK_SOURCE,
             "pool_size": int(pool_size),
             "simulations": int(simulations),
             "sample_entry_count": 0,
             "entry_weight": 0.0,
+            "clustering_strength": 0.0,
+            "elite_path_bias": 1.0,
+            "late_season_overlap_weight": 2.0,
+            "path_convergence_temperature": 1.0,
+            "late_season_convergence_score": 0.0,
         },
         weeks=resolved_weeks,
         teams=resolved_teams,

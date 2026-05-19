@@ -25,6 +25,10 @@ def test_behavior_presets_load():
         assert config.future_awareness >= 0
         assert 0 < config.max_single_team_ownership <= 1
         assert config.ownership_temperature > 0
+        assert config.clustering_strength >= 0
+        assert config.elite_path_bias >= 0
+        assert config.late_season_overlap_weight > 0
+        assert config.path_convergence_temperature > 0
 
 
 def test_different_chalkiness_changes_ownership_concentration():

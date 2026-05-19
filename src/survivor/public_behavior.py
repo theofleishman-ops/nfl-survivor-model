@@ -43,6 +43,8 @@ class PublicBehaviorConfig:
     ``contrarian_rate`` controls how much of the non-chalk behavior leans away
     from popular teams. ``ownership_temperature`` sharpens or softens the final
     weekly ownership distribution before the optional max-team cap is applied.
+    ``clustering_strength`` and related path parameters model how much public
+    entries converge onto shared elite future routes beyond weekly ownership.
     """
 
     chalkiness: float
@@ -53,6 +55,10 @@ class PublicBehaviorConfig:
     contrarian_rate: float
     max_single_team_ownership: float
     ownership_temperature: float
+    clustering_strength: float = 0.0
+    elite_path_bias: float = 1.0
+    late_season_overlap_weight: float = 2.0
+    path_convergence_temperature: float = 1.0
     name: str = "custom"
     description: str = "Custom public behavior assumptions."
 
@@ -67,6 +73,13 @@ class PublicBehaviorConfig:
         if float(self.max_single_team_ownership) <= 0:
             raise ValueError("max_single_team_ownership must be greater than 0.")
         _validate_positive("ownership_temperature", self.ownership_temperature)
+        _validate_non_negative("clustering_strength", self.clustering_strength)
+        _validate_non_negative("elite_path_bias", self.elite_path_bias)
+        _validate_positive("late_season_overlap_weight", self.late_season_overlap_weight)
+        _validate_positive(
+            "path_convergence_temperature",
+            self.path_convergence_temperature,
+        )
 
 
 def public_behavior_from_legacy(
@@ -91,6 +104,10 @@ def public_behavior_from_legacy(
         contrarian_rate=float(randomness),
         max_single_team_ownership=1.0,
         ownership_temperature=1.0,
+        clustering_strength=0.0,
+        elite_path_bias=1.0,
+        late_season_overlap_weight=2.0,
+        path_convergence_temperature=1.0,
     )
 
 
@@ -124,6 +141,10 @@ PUBLIC_BEHAVIOR_PRESETS: dict[str, PublicBehaviorConfig] = {
         contrarian_rate=0.03,
         max_single_team_ownership=0.70,
         ownership_temperature=0.82,
+        clustering_strength=0.45,
+        elite_path_bias=1.45,
+        late_season_overlap_weight=2.80,
+        path_convergence_temperature=0.72,
     ),
     "balanced_public": PublicBehaviorConfig(
         name="balanced_public",
@@ -139,6 +160,10 @@ PUBLIC_BEHAVIOR_PRESETS: dict[str, PublicBehaviorConfig] = {
         contrarian_rate=0.08,
         max_single_team_ownership=0.58,
         ownership_temperature=1.0,
+        clustering_strength=0.28,
+        elite_path_bias=1.20,
+        late_season_overlap_weight=2.20,
+        path_convergence_temperature=0.85,
     ),
     "contrarian_public": PublicBehaviorConfig(
         name="contrarian_public",
@@ -154,6 +179,10 @@ PUBLIC_BEHAVIOR_PRESETS: dict[str, PublicBehaviorConfig] = {
         contrarian_rate=0.28,
         max_single_team_ownership=0.40,
         ownership_temperature=1.25,
+        clustering_strength=0.10,
+        elite_path_bias=0.80,
+        late_season_overlap_weight=1.60,
+        path_convergence_temperature=1.05,
     ),
     "future_aware_public": PublicBehaviorConfig(
         name="future_aware_public",
@@ -170,6 +199,10 @@ PUBLIC_BEHAVIOR_PRESETS: dict[str, PublicBehaviorConfig] = {
         contrarian_rate=0.08,
         max_single_team_ownership=0.48,
         ownership_temperature=1.05,
+        clustering_strength=0.22,
+        elite_path_bias=1.05,
+        late_season_overlap_weight=2.40,
+        path_convergence_temperature=0.90,
     ),
     "naive_public": PublicBehaviorConfig(
         name="naive_public",
@@ -185,6 +218,10 @@ PUBLIC_BEHAVIOR_PRESETS: dict[str, PublicBehaviorConfig] = {
         contrarian_rate=0.03,
         max_single_team_ownership=0.62,
         ownership_temperature=1.12,
+        clustering_strength=0.35,
+        elite_path_bias=1.10,
+        late_season_overlap_weight=2.00,
+        path_convergence_temperature=0.82,
     ),
 }
 

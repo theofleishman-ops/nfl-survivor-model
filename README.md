@@ -29,7 +29,8 @@ simulated public-field path model, so future ownership reflects public entries'
 used-team constraints instead of treating each future week as independent.
 Phase 17 adds public behavior calibration presets and reports so full-season EV
 is interpreted as a range across plausible field behavior rather than a single
-point estimate.
+point estimate. Phase 18 adds future path clustering realism so full-season EV
+penalizes duplicate elite-team routes and late-season convergence.
 
 The real 2026 schedule is included. No real odds, real pool data, secrets, API
 keys, raw API responses, or scraping code are included.
@@ -687,7 +688,41 @@ python scripts/run_live_week.py --season 2026 --week 1 --run-path-ev --team-stre
 
 The public-field report sections show expected remaining field by week,
 expected team exhaustion, projected future ownership, scarcity weeks, path
-uniqueness score, and expected overlap with the simulated public field.
+uniqueness score, expected overlap with the simulated public field, crowded
+future path archetypes, duplicate-path counts, and late-season convergence
+warnings.
+
+## Path Clustering Realism
+
+Weekly ownership is not the same as path ownership. A team can be 20% owned in
+Week 8 while a much smaller but more dangerous crowd is following the same
+future route, such as preserving and then spending KC, BUF, PHI, and DET in the
+same late-season window. Those entries may not look identical in early weeks,
+but they can become highly correlated when the schedule leaves only a few
+obvious elite teams for surviving entries.
+
+`src/survivor/path_clustering.py` models that hidden crowding with:
+
+- exact team overlap,
+- ordered same-week overlap,
+- late-season overlap with higher weight on later weeks,
+- elite-team overlap for strong/popular remaining teams.
+
+The public-field simulation uses configurable clustering pressure to make
+calibrated public entries gravitate toward common elite future paths. Path EV
+then reports both generic surviving field size and duplicate-route risk:
+
+- `expected_duplicate_path_count`,
+- `expected_identical_path_survivors`,
+- `path_clustering_score`,
+- `late_season_congestion_score`,
+- `cluster_adjusted_uniqueness_score`,
+- top crowded future path archetypes.
+
+The EV denominator is adjusted by a configurable duplicate-route penalty. This
+does not redesign the objective: the objective remains expected contest equity.
+The adjustment reduces overconfidence when the selected path survives alongside
+many near-identical elite routes.
 
 Assumptions and limitations:
 
@@ -695,6 +730,9 @@ Assumptions and limitations:
 - Future ownership uses pathwise public-entry simulation when multiple weeks
   are evaluated. Future public-pick rows and projected ownership are treated as
   popularity inputs, then adjusted by used-team constraints.
+- Future route ownership is modeled separately from weekly ownership. Late
+  overlap and elite-team convergence can lower the path uniqueness score even
+  when a single week does not look overly crowded.
 - Win probabilities are tagged as `real_moneyline`, `real_spread`,
   `projected_team_strength`, or `fallback_default`. The model uses no-vig
   moneyline first, then spread, then `team_strength.csv` ratings with opponent
@@ -709,6 +747,9 @@ Assumptions and limitations:
 - The public-field model is behavioral, not a claim to know exact opponent
   entries. Its assumptions are configurable, but late-season ownership remains
   a projection when real future public-pick data is unavailable.
+- Independent-entry assumptions remain a limitation. Path clustering is a
+  realism adjustment that captures duplicate-route pressure, not proof that a
+  specific opponent will follow the exact same route.
 
 ## Public Behavior Calibration
 
@@ -728,6 +769,15 @@ Behavior presets live in `src/survivor/public_behavior.py`:
   scarce weeks.
 - `naive_public`: field mostly reacts to current-week win probability and
   simple popularity cues.
+
+Each preset also configures:
+
+- `clustering_strength`: how much public entries reinforce common future paths.
+- `elite_path_bias`: how strongly obvious elite-team routes attract the field.
+- `late_season_overlap_weight`: how much late overlap matters relative to early
+  overlap.
+- `path_convergence_temperature`: how sharply the field collapses onto the best
+  remaining routes.
 
 Run the calibration report:
 
@@ -860,6 +910,11 @@ ranking comparison, and markdown reports.
 Phase 17 public behavior calibration: implemented with named behavior presets,
 a full-season calibration runner, sensitivity reports, deterministic tests, and
 a pool-history calibration template for future historical fitting.
+
+Phase 18 path clustering realism: implemented with future-route similarity,
+duplicate-path estimation, late-season convergence diagnostics, clustering
+pressure in public behavior presets, cluster-adjusted uniqueness, and reports
+for crowded elite path archetypes.
 
 Future work: add ownership forecasting, more API adapters, optional scraper
 plugins, and an interactive dashboard without secrets, committed private data,

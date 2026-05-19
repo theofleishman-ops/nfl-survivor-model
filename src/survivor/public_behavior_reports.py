@@ -43,6 +43,10 @@ def build_public_behavior_calibration_report(
                 "expected_final_field_size",
                 "average_max_ownership_by_week",
                 "average_chalk_concentration",
+                "path_clustering_score",
+                "late_season_congestion_score",
+                "expected_duplicate_path_count",
+                "cluster_adjusted_uniqueness_score",
                 "expected_team_exhaustion",
                 "best_path",
             ],
@@ -83,6 +87,10 @@ def build_public_behavior_calibration_report(
                 "contrarian_rate",
                 "max_single_team_ownership",
                 "ownership_temperature",
+                "clustering_strength",
+                "elite_path_bias",
+                "late_season_overlap_weight",
+                "path_convergence_temperature",
                 "description",
             ],
         ),
@@ -181,6 +189,10 @@ def _assumption_driver_table(df: pd.DataFrame) -> pd.DataFrame:
         "contrarian_rate",
         "max_single_team_ownership",
         "ownership_temperature",
+        "clustering_strength",
+        "elite_path_bias",
+        "late_season_overlap_weight",
+        "path_convergence_temperature",
     ]
     rows: list[dict[str, Any]] = []
     for column in columns:
@@ -226,6 +238,9 @@ def _markdown_table(df: pd.DataFrame, columns: list[str]) -> str:
             "path_survival_probability",
             "average_max_ownership_by_week",
             "average_chalk_concentration",
+            "path_clustering_score",
+            "late_season_congestion_score",
+            "cluster_adjusted_uniqueness_score",
             "expected_team_exhaustion",
         }:
             table[column] = table[column].map(_format_pct)
@@ -244,8 +259,13 @@ def _markdown_table(df: pd.DataFrame, columns: list[str]) -> str:
             "contrarian_rate",
             "max_single_team_ownership",
             "ownership_temperature",
+            "clustering_strength",
+            "elite_path_bias",
+            "late_season_overlap_weight",
+            "path_convergence_temperature",
             "expected_survivors_if_alive",
             "expected_final_field_size",
+            "expected_duplicate_path_count",
         }:
             table[column] = table[column].map(_format_number)
     headers = list(table.columns)

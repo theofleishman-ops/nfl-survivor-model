@@ -195,6 +195,22 @@ def main() -> None:
         f"{_format_optional_count(diagnostics.get('expected_public_overlap_entries'))} "
         f"({_format_optional_pct(diagnostics.get('expected_public_overlap_pct'))})"
     )
+    print(
+        "Expected duplicate-path count: "
+        f"{_format_optional_count(diagnostics.get('expected_duplicate_path_count'))}"
+    )
+    print(
+        "Expected identical-path survivors: "
+        f"{_format_optional_count(diagnostics.get('expected_identical_path_survivors'))}"
+    )
+    print(
+        "Path clustering score: "
+        f"{_format_optional_pct(diagnostics.get('path_clustering_score'))}"
+    )
+    print(
+        "Late-season congestion score: "
+        f"{_format_optional_pct(diagnostics.get('late_season_congestion_score'))}"
+    )
     print(f"Scarcity weeks: {_format_week_list(diagnostics.get('scarcity_weeks'))}")
     print(f"Weeks with real odds: {_format_week_list(diagnostics.get('weeks_with_real_odds'))}")
     print(
